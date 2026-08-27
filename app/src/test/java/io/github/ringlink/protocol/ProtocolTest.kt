@@ -212,6 +212,12 @@ class RecordsTest {
 }
 
 class RingClockTest {
+    /** The anchor is pinned by a real Gen 3 capture: cursor 0x0C7C3BCC == 2026-08-21T01:39:24Z. */
+    @Test fun `epoch anchor matches the gen3 capture`() {
+        val clock = RingClock()
+        assertEquals(1_787_276_364L, clock.toUnixSeconds(0x0C7C3BCCL))
+    }
+
     @Test fun `cursor round-trips through the epoch`() {
         val clock = RingClock()
         val now = 1_787_378_188L

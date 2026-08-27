@@ -38,8 +38,15 @@ class RingClock(private var epochSeconds: Long = DEFAULT_EPOCH) {
     }
 
     companion object {
-        /** 2019-12-31 12:00:00 UTC — OpenCircuit's constant. */
-        const val DEFAULT_EPOCH = 1_577_793_600L
+        /**
+         * 2019-12-31 16:00:00 UTC.
+         *
+         * Two candidates circulate, 4 hours apart. This one is confirmed against a real Gen 3
+         * (FR05): a sync-open captured from the vendor app at 01:39:24 UTC carried cursor
+         * 0x0C7C3BCC, which decodes to exactly that instant with this anchor and to 21:39:24 the
+         * previous day with the other. Calibration still runs, in case other firmware differs.
+         */
+        const val DEFAULT_EPOCH = 1_577_808_000L
 
         /** Accept only anchors within a day of the documented candidates. */
         private const val MIN_EPOCH = DEFAULT_EPOCH - 86_400L

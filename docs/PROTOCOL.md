@@ -56,8 +56,14 @@ per channel (0x00 sleep, 0x03 all-day, 0x02 sport):
 **The ACK is a destructive read.** It advances the ring's single shared resume pointer; the ring
 then drops that page. Persist first, always.
 
-Cursors are `unix_seconds − epoch`, big-endian. The epoch anchor is disputed by 4 hours between
-implementations, so RingLink calibrates it at runtime instead of hardcoding either value.
+Cursors are `unix_seconds − epoch`, big-endian.
+
+**The 4-hour epoch dispute, resolved.** Two anchors circulate — `1577793600` (OpenCircuit) and
+`1577808000` (Gadgetbridge), exactly 14400 s apart. Measured against a real Gen 3 (FR05): a
+sync-open captured from the vendor app at `01:39:24Z` carried cursor `0x0C7C3BCC`, which decodes to
+that instant with `1577808000` and to `21:39:24Z` the previous day with the other. **`1577808000` is
+correct on this hardware.** RingLink defaults to it and still calibrates at runtime, in case other
+firmware differs.
 
 ## Records
 

@@ -1,5 +1,6 @@
 package io.github.ringlink.protocol
 
+import io.github.ringlink.L
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeout
@@ -77,6 +78,7 @@ class SyncSession(
     }
 
     private suspend fun drainChannel(channel: Int): SyncStats {
+        L.i("channel 0x%02x: opening".format(channel))
         transport.write(Opcodes.syncOpen(clock.cursorForNow(now()), channel))
         val openAck = awaitFrame(Opcodes.RESP_SYNC_OPEN, OPEN_TIMEOUT_MS)
         // byte[1] == 0xff means the resume pointer is already at the end: nothing to drain.
@@ -106,6 +108,7 @@ class SyncSession(
                 Opcodes.RESP_PAGE_4C -> {
                     val records = Pages.epochs(frame)
                     // Persist BEFORE acking: the ack is irreversible.
+                    L.d("page 0x4c: ${records.size} epochs, remaining=${Pages.remaining(frame)}")
                     sink.onEpochs(channel, records)
                     transport.write(Opcodes.ACK_4C)
                     stats = stats + SyncStats(
@@ -141,7 +144,10 @@ class SyncSession(
                         transport.write(Opcodes.FETCH)
                     }
                 }
-                Opcodes.RESP_END_OF_HISTORY -> return stats
+                Opcodes.RESP_END_OF_HISTORY -> {
+                    L.i("channel 0x%02x: end of history".format(channel))
+                    return stats
+                }
             }
         }
         return stats

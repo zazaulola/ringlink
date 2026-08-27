@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import io.github.ringlink.L
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
@@ -93,7 +94,9 @@ class RingService : Service() {
         if (client.isConnected) return true
         val address = settings.ringAddress ?: return false
         state.value = state.value.copy(status = "Connecting…")
+        L.i("connecting to $address")
         val ok = client.connect(address)
+        L.i("connect -> $ok")
         state.value = state.value.copy(connected = ok, status = if (ok) "Connected" else "Not connected")
         if (ok) {
             startIdleLoop()
@@ -130,6 +133,7 @@ class RingService : Service() {
     /** Buzz the ring. Safe to call at any time; the transport serialises it against a sync. */
     suspend fun buzz() {
         if (!ensureConnected()) return
+        L.i("buzz")
         client.write(Opcodes.VIBRATE)
     }
 
@@ -148,11 +152,15 @@ class RingService : Service() {
             state.value = state.value.copy(syncing = true, status = "Syncing…")
             try {
                 val session = SyncSession(settings.ringAddress!!, client, repo, clock)
+                L.i("authenticating")
                 if (!session.authenticate()) {
+                    L.e("auth failed")
                     state.value = state.value.copy(status = "Authentication failed")
                     return@withLock
                 }
+                L.i("auth ok, draining history")
                 val stats = session.syncHistory()
+                L.i("sync done: epochs=${stats.epochs} pages=${stats.pages} sport=${stats.sportIntervals} newest=${stats.newestCounter} epochAnchor=${clock.epoch()}")
                 settings.epochAnchor = clock.epoch()
                 settings.lastSyncAt = System.currentTimeMillis()
                 state.value = state.value.copy(
@@ -161,6 +169,7 @@ class RingService : Service() {
                 )
                 if (settings.exportToHealthConnect) {
                     val exported = exporter.exportPending(clock)
+                    L.i("health connect export: $exported rows")
                     if (exported > 0) {
                         state.value = state.value.copy(status = "Synced ${stats.epochs}, exported $exported")
                     }

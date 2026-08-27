@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
+import io.github.ringlink.L
 import io.github.ringlink.protocol.RingTransport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
@@ -62,6 +63,7 @@ class RingBleClient(private val context: Context) : RingTransport {
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             val ok = status == BluetoothGatt.GATT_SUCCESS && subscribe(g)
+            L.i("services discovered status=$status subscribed=$ok")
             if (!servicesReady.isCompleted) servicesReady.complete(ok)
         }
 
