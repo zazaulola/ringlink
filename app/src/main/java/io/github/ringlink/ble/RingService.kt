@@ -58,10 +58,11 @@ class RingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         settings = Settings(this)
         repo = RingRepository(RingDatabase.get(this).dao())
         exporter = HealthExporter(this, repo, settings)
-        clock = RingClock(settings.epochAnchor)
+        clock = RingClock(settings.epochAnchor, settings.epochCalibrated)
         client = RingBleClient(this)
         client.onConnectionChange = { up -> state.value = state.value.copy(connected = up) }
         if (settings.buzzOnCalls) {
@@ -81,6 +82,7 @@ class RingService : Service() {
     }
 
     override fun onDestroy() {
+        instance = null
         idleJob?.cancel()
         callMonitor?.stop()
         client.disconnect()
@@ -162,6 +164,7 @@ class RingService : Service() {
                 val stats = session.syncHistory()
                 L.i("sync done: epochs=${stats.epochs} pages=${stats.pages} sport=${stats.sportIntervals} newest=${stats.newestCounter} epochAnchor=${clock.epoch()}")
                 settings.epochAnchor = clock.epoch()
+                settings.epochCalibrated = clock.isCalibrated()
                 settings.lastSyncAt = System.currentTimeMillis()
                 state.value = state.value.copy(
                     status = "Synced ${stats.epochs} records",
@@ -220,6 +223,17 @@ class RingService : Service() {
         private const val CHANNEL_ID = "ring_link"
         private const val NOTIFICATION_ID = 1
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
+
+        /**
+         * The running instance, if any.
+         *
+         * Android 12+ forbids starting a foreground service from the background, so the periodic
+         * sync worker cannot spin this up on its own — it reaches the already-running service
+         * through here instead, and simply retries later if the service is not up.
+         */
+        @Volatile
+        var instance: RingService? = null
+            private set
 
         /** Simple shared state so the UI can observe the service without binding. */
         val state = MutableStateFlow(State())

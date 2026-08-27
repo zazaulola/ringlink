@@ -212,10 +212,40 @@ class RecordsTest {
 }
 
 class RingClockTest {
-    /** The anchor is pinned by a real Gen 3 capture: cursor 0x0C7C3BCC == 2026-08-21T01:39:24Z. */
-    @Test fun `epoch anchor matches the gen3 capture`() {
+    /**
+     * Pinned by a real Gen 3 record: counter 210001367 was the newest epoch in a sync that ran at
+     * 2026-08-27T01:46:21Z, and decodes to 01:42:47Z — 3.6 minutes earlier, as it should be.
+     */
+    @Test fun `epoch anchor matches a real gen3 record`() {
         val clock = RingClock()
-        assertEquals(1_787_276_364L, clock.toUnixSeconds(0x0C7C3BCCL))
+        assertEquals(1_787_794_967L, clock.toUnixSeconds(210_001_367L))
+    }
+
+    /** The vendor app's sync-open cursor lives in a different space, exactly 4 hours ahead. */
+    @Test fun `cursor space is four hours ahead of record space`() {
+        assertEquals(4 * 3600L, RingClock.CURSOR_EPOCH - RingClock.DEFAULT_EPOCH)
+    }
+
+    /**
+     * Regression: a mis-parsed page once reported a counter four hours ahead, and calibration
+     * happily re-anchored the whole archive to make that counter look like "now". Once the anchor
+     * is settled it must stay put.
+     */
+    @Test fun `a settled anchor ignores a bogus future counter`() {
+        val clock = RingClock(RingClock.DEFAULT_EPOCH, calibrated = true)
+        val now = 1_787_794_967L
+        assertFalse(clock.calibrate(clock.cursorForNow(now) + 4 * 3600L, now))
+        assertEquals(RingClock.DEFAULT_EPOCH, clock.epoch())
+    }
+
+    @Test fun `calibration happens once, not on every sync`() {
+        val clock = RingClock()
+        val now = 1_787_794_967L
+        assertTrue(clock.calibrate(now - (RingClock.DEFAULT_EPOCH + 3600L), now))
+        assertTrue(clock.isCalibrated())
+        val settled = clock.epoch()
+        assertFalse(clock.calibrate(now - (RingClock.DEFAULT_EPOCH + 7200L), now))
+        assertEquals(settled, clock.epoch())
     }
 
     @Test fun `cursor round-trips through the epoch`() {

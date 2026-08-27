@@ -89,12 +89,14 @@ Two related safeguards:
 
 - **Auto-sync pauses overnight** (configurable). Draining mid-night shreds the backlog the ring is
   still accumulating; one drain in the morning is both safer and more complete.
-- **The epoch anchor is measured, not guessed.** The two reverse-engineering efforts disagree by
-  exactly 4 hours about the absolute time anchor. This project settled it on real Gen 3 hardware by
-  decoding a cursor captured from the vendor app against a known wall-clock time — see
-  [docs/PROTOCOL.md](docs/PROTOCOL.md). RingLink ships the confirmed value and *still* calibrates at
-  runtime in case other firmware differs. Counters are stored raw, so re-anchoring re-dates old rows
-  correctly instead of corrupting them.
+- **The epoch anchor is measured, not guessed — and calibration happens once.** The two
+  reverse-engineering efforts disagree by exactly 4 hours about the time anchor. Measured on real
+  Gen 3 hardware, they turn out to describe *two different fields*: record counters and the vendor
+  app's sync-open cursor genuinely live 4 hours apart. Health data is dated from record counters, so
+  that is the anchor RingLink ships — see [docs/PROTOCOL.md](docs/PROTOCOL.md). Calibration then runs
+  exactly once, because a shifted anchor makes a mis-dated record look like "now" and so can always
+  justify shifting further. Counters are stored raw, so re-anchoring re-dates old rows correctly
+  instead of corrupting them.
 
 See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the wire format.
 

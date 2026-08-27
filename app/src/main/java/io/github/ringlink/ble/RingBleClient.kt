@@ -41,6 +41,9 @@ class RingBleClient(private val context: Context) : RingTransport {
     @Volatile var isConnected: Boolean = false
         private set
 
+    /** Set when the user asked to disconnect, so a drop is not auto-reconnected. */
+    @Volatile private var closing = false
+
     var onConnectionChange: ((Boolean) -> Unit)? = null
 
     private val callback = object : BluetoothGattCallback() {
@@ -57,13 +60,27 @@ class RingBleClient(private val context: Context) : RingTransport {
                     onConnectionChange?.invoke(false)
                     if (!connected.isCompleted) connected.complete(false)
                     if (!servicesReady.isCompleted) servicesReady.complete(false)
+                    // Re-arm as a background connect: g.connect() on an existing GATT puts the
+                    // address on the controller allow-list, so the link returns by itself when the
+                    // ring next advertises. Skip it if we closed the link deliberately.
+                    if (!closing) runCatching { g.connect() }
                 }
             }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val ok = status == BluetoothGatt.GATT_SUCCESS && subscribe(g)
-            L.i("services discovered status=$status subscribed=$ok")
+            val started = status == BluetoothGatt.GATT_SUCCESS && subscribe(g)
+            L.i("services discovered status=$status subscribe-started=$started")
+            // Do NOT report ready here: enabling notifications is itself a GATT write, and until
+            // the ring acknowledges it no notifications arrive — so an immediate command would sit
+            // unanswered and time out. Completion happens in onDescriptorWrite.
+            if (!started && !servicesReady.isCompleted) servicesReady.complete(false)
+        }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
+            if (d.uuid != CCCD) return
+            val ok = status == BluetoothGatt.GATT_SUCCESS
+            L.i("notifications enabled=$ok")
             if (!servicesReady.isCompleted) servicesReady.complete(ok)
         }
 
@@ -98,9 +115,12 @@ class RingBleClient(private val context: Context) : RingTransport {
 
         connected = CompletableDeferred()
         servicesReady = CompletableDeferred()
-        // autoConnect keeps the address on the controller allow-list, so the link comes back by
-        // itself after the ring drifts out of range instead of timing out permanently.
-        gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
+        closing = false
+        // A DIRECT connect (autoConnect = false) for the first attempt: it is fast and bounded.
+        // autoConnect = true would be opportunistic — it waits for the ring to advertise, which can
+        // take minutes. Background persistence is instead arranged on disconnect, by re-arming the
+        // same GATT object, which gives allow-list behaviour without the slow first connect.
+        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
 
         val up = withTimeoutOrNull(timeoutMs) { connected.await() } ?: false
         if (!up) return false
@@ -148,6 +168,7 @@ class RingBleClient(private val context: Context) : RingTransport {
     }
 
     fun disconnect() {
+        closing = true
         gatt?.let {
             runCatching { it.disconnect() }
             runCatching { it.close() }

@@ -51,4 +51,39 @@ interface RingDao {
 
     @Query("SELECT * FROM epochs WHERE counter BETWEEN :from AND :to ORDER BY counter")
     suspend fun epochsBetween(from: Long, to: Long): List<EpochEntity>
+
+    /** Everything newer than a cursor, oldest first — what the history screen charts. */
+    @Query("SELECT * FROM epochs WHERE counter >= :since ORDER BY counter")
+    fun epochsSince(since: Long): Flow<List<EpochEntity>>
+
+    @Query(
+        """
+        SELECT MIN(counter) AS firstCounter,
+               MAX(counter) AS lastCounter,
+               COUNT(*) AS samples,
+               AVG(heartRate) AS avgHeartRate,
+               MIN(heartRate) AS minHeartRate,
+               MAX(heartRate) AS maxHeartRate,
+               AVG(hrvRmssd) AS avgHrv,
+               AVG(spo2) AS avgSpo2,
+               MIN(spo2) AS minSpo2,
+               AVG(respiratoryRate) AS avgRespiratoryRate
+        FROM epochs WHERE counter >= :since
+        """,
+    )
+    fun summarySince(since: Long): Flow<Summary?>
 }
+
+/** Aggregate over a window, computed in SQL so the UI never walks the whole table. */
+data class Summary(
+    val firstCounter: Long?,
+    val lastCounter: Long?,
+    val samples: Int,
+    val avgHeartRate: Double?,
+    val minHeartRate: Int?,
+    val maxHeartRate: Int?,
+    val avgHrv: Double?,
+    val avgSpo2: Double?,
+    val minSpo2: Int?,
+    val avgRespiratoryRate: Double?,
+)

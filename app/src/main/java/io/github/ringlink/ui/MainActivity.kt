@@ -24,11 +24,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -59,15 +64,29 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
         PermissionController.createRequestPermissionResultContract(),
     ) { vm.refresh() }
 
+    var tab by remember { mutableIntStateOf(0) }
+
     Scaffold(topBar = { TopAppBar(title = { Text("RingLink") }) }) { padding ->
         Column(
             Modifier
                 .padding(padding)
-                .padding(16.dp)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .fillMaxSize(),
         ) {
+            TabRow(selectedTabIndex = tab) {
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Status") })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("History") })
+            }
+            Column(
+                Modifier
+                    .padding(16.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (tab == 1) {
+                    HistoryScreen(vm)
+                    return@Column
+                }
             SectionCard("Ring") {
                 if (ui.ring == null) {
                     Text("No ring selected.")
@@ -154,6 +173,7 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     Text("Grant Bluetooth, phone and notification permissions")
                 }
                 OutlinedButton(onClick = { vm.refresh() }, Modifier.fillMaxWidth()) { Text("Refresh") }
+            }
             }
         }
     }

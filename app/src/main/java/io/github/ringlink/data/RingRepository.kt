@@ -73,4 +73,7 @@ class RingRepository(private val dao: RingDao) : RecordSink {
 
     /** Contiguous runs of sleep-channel epochs, used to derive sleep sessions. */
     suspend fun epochsBetween(from: Long, to: Long) = dao.epochsBetween(from, to)
+
+    fun epochsSince(counter: Long): Flow<List<EpochEntity>> = dao.epochsSince(counter)
+    fun summarySince(counter: Long): Flow<Summary?> = dao.summarySince(counter)
 }

@@ -129,11 +129,11 @@ class SyncSession(
                 }
                 Opcodes.RESP_PAGE_47 -> {
                     // Sparse perfusion trend: nothing worth storing, but it must still be acked.
+                    // Its counters deliberately do NOT feed newestCounter — this page is the least
+                    // trustworthy thing we parse, and letting it drive clock calibration once
+                    // dragged every timestamp four hours out.
                     transport.write(Opcodes.ACK_47)
-                    stats = stats + SyncStats(
-                        pages = 1,
-                        newestCounter = Pages.perfusionCounters(frame).maxOrNull() ?: 0,
-                    )
+                    stats = stats + SyncStats(pages = 1)
                 }
                 Opcodes.RESP_HEARTBEAT -> transport.write(Opcodes.HEARTBEAT_ACK)
                 Opcodes.RESP_DESCRIPTOR_FETCH, Opcodes.RESP_DESCRIPTOR_QUERY -> {

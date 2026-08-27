@@ -20,6 +20,10 @@ class Settings(context: Context) {
         get() = prefs.getLong(KEY_EPOCH, io.github.ringlink.protocol.RingClock.DEFAULT_EPOCH)
         set(v) = prefs.edit { putLong(KEY_EPOCH, v) }
 
+    var epochCalibrated: Boolean
+        get() = prefs.getBoolean(KEY_EPOCH_DONE, false)
+        set(v) = prefs.edit { putBoolean(KEY_EPOCH_DONE, v) }
+
     var lastSyncAt: Long
         get() = prefs.getLong(KEY_LAST_SYNC, 0)
         set(v) = prefs.edit { putLong(KEY_LAST_SYNC, v) }
@@ -64,6 +68,7 @@ class Settings(context: Context) {
         const val KEY_ADDRESS = "ring_address"
         const val KEY_NAME = "ring_name"
         const val KEY_EPOCH = "epoch_anchor"
+        const val KEY_EPOCH_DONE = "epoch_calibrated"
         const val KEY_LAST_SYNC = "last_sync"
         const val KEY_BUZZ_NOTIF = "buzz_notifications"
         const val KEY_BUZZ_CALLS = "buzz_calls"

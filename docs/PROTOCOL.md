@@ -58,12 +58,25 @@ then drops that page. Persist first, always.
 
 Cursors are `unix_seconds − epoch`, big-endian.
 
-**The 4-hour epoch dispute, resolved.** Two anchors circulate — `1577793600` (OpenCircuit) and
-`1577808000` (Gadgetbridge), exactly 14400 s apart. Measured against a real Gen 3 (FR05): a
-sync-open captured from the vendor app at `01:39:24Z` carried cursor `0x0C7C3BCC`, which decodes to
-that instant with `1577808000` and to `21:39:24Z` the previous day with the other. **`1577808000` is
-correct on this hardware.** RingLink defaults to it and still calibrates at runtime, in case other
-firmware differs.
+**The 4-hour epoch dispute.** Two anchors circulate — `1577793600` (OpenCircuit) and `1577808000`
+(Gadgetbridge), exactly 14400 s apart. Measured on a Gen 3 (FR05), they are not two guesses at one
+number: they describe **two different fields**.
+
+- **Record counters** in `0x4c` pages anchor at **`1577793600`**. Decisive test: with the other
+  anchor the newest record of a sync lands *four hours after the sync that fetched it*, and a
+  record from the future is impossible. With this one it lands 3.6 minutes before — as it should.
+- The **cursor the vendor app writes** in its `02 00` sync-open anchors at `1577808000`: a captured
+  cursor matches its capture time exactly under that constant and only that one.
+
+Health data is timestamped from record counters, so `1577793600` is the anchor that matters.
+
+Two hazards this uncovered, both now guarded in code:
+
+1. `0x47` counters must never feed clock calibration. They are the least trustworthy thing here,
+   and letting them anchor the clock once dragged an entire archive four hours out.
+2. Calibration must be **one-shot**. A shifted anchor makes a wrongly-dated record look like "now",
+   so recalibration can always justify itself — repeated calibration is a mechanism for drift, not
+   for accuracy.
 
 ## Records
 
