@@ -151,6 +151,14 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     }
                 }
                 ToggleRow("Export to Health Connect", ui.exportToHealthConnect, vm::setExport)
+                OutlinedButton(onClick = { vm.reExport() }, Modifier.fillMaxWidth()) {
+                    Text("Re-export everything")
+                }
+                Text(
+                    "Rewrites all stored records at their current timestamps — use it after a " +
+                        "clock correction, or once permission is granted.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
 
             SectionCard("Buzz the ring") {

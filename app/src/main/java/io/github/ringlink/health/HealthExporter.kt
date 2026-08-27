@@ -26,6 +26,25 @@ class HealthExporter(
     fun isAvailable(): Boolean = writer.isAvailable()
     suspend fun hasPermissions(): Boolean = writer.isAvailable() && writer.hasAllPermissions()
 
+    /**
+     * Re-send everything, overwriting what is already in Health Connect.
+     *
+     * Records keep their raw ring counters, so if the clock anchor was corrected the rewrite lands
+     * at the corrected times; the rising client-record version makes Health Connect accept the
+     * replacement rather than ignore it as a duplicate.
+     */
+    suspend fun reExportAll(clock: RingClock): Int {
+        if (!hasPermissions()) return 0
+        repo.resetExports()
+        var total = 0
+        while (true) {
+            val n = exportPending(clock)
+            if (n == 0) break
+            total += n
+        }
+        return total
+    }
+
     /** Returns how many source rows were exported. */
     suspend fun exportPending(clock: RingClock): Int {
         if (!settings.exportToHealthConnect) return 0

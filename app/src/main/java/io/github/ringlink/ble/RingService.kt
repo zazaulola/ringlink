@@ -76,6 +76,7 @@ class RingService : Service() {
             ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
             ACTION_SYNC -> scope.launch { syncNow(force = true) }
             ACTION_BUZZ -> scope.launch { buzz() }
+            ACTION_REEXPORT -> scope.launch { reExport() }
             else -> scope.launch { ensureConnected() }
         }
         return START_STICKY
@@ -137,6 +138,16 @@ class RingService : Service() {
         if (!ensureConnected()) return
         L.i("buzz")
         client.write(Opcodes.VIBRATE)
+    }
+
+    /** Rewrite every stored record into Health Connect at its current (corrected) timestamp. */
+    private suspend fun reExport() {
+        state.value = state.value.copy(status = "Re-exporting…")
+        val n = runCatching { exporter.reExportAll(clock) }
+            .onFailure { L.e("re-export failed", it) }
+            .getOrDefault(0)
+        L.i("re-exported $n rows")
+        state.value = state.value.copy(status = "Re-exported $n records")
     }
 
     private fun shouldAutoSync(): Boolean {
@@ -220,6 +231,7 @@ class RingService : Service() {
         const val ACTION_SYNC = "io.github.ringlink.SYNC"
         const val ACTION_BUZZ = "io.github.ringlink.BUZZ"
         const val ACTION_STOP = "io.github.ringlink.STOP"
+        const val ACTION_REEXPORT = "io.github.ringlink.REEXPORT"
         private const val CHANNEL_ID = "ring_link"
         private const val NOTIFICATION_ID = 1
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L

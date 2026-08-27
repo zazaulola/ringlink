@@ -37,6 +37,15 @@ interface RingDao {
     @Query("UPDATE device_state SET exportedAt = :at WHERE recordedAt IN (:times)")
     suspend fun markDeviceStatesExported(times: List<Long>, at: Long)
 
+    @Query("UPDATE epochs SET exportedAt = NULL")
+    suspend fun clearEpochExports()
+
+    @Query("UPDATE sport SET exportedAt = NULL")
+    suspend fun clearSportExports()
+
+    @Query("UPDATE device_state SET exportedAt = NULL")
+    suspend fun clearDeviceStateExports()
+
     @Query("SELECT COUNT(*) FROM epochs")
     fun epochCount(): Flow<Int>
 

@@ -149,6 +149,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun connect() = RingService.start(getApplication())
     fun syncNow() = RingService.start(getApplication(), RingService.ACTION_SYNC)
     fun testBuzz() = RingService.start(getApplication(), RingService.ACTION_BUZZ)
+    fun reExport() = RingService.start(getApplication(), RingService.ACTION_REEXPORT)
 
     private fun hasNotificationAccess(context: Context): Boolean {
         val enabled = AndroidSettings.Secure.getString(

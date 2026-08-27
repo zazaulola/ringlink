@@ -74,6 +74,16 @@ class RingRepository(private val dao: RingDao) : RecordSink {
     /** Contiguous runs of sleep-channel epochs, used to derive sleep sessions. */
     suspend fun epochsBetween(from: Long, to: Long) = dao.epochsBetween(from, to)
 
+    /**
+     * Queue everything for export again. Used after a clock correction: the rows keep their raw
+     * counters, so re-exporting rewrites them into Health Connect at the corrected times.
+     */
+    suspend fun resetExports() {
+        dao.clearEpochExports()
+        dao.clearSportExports()
+        dao.clearDeviceStateExports()
+    }
+
     fun epochsSince(counter: Long): Flow<List<EpochEntity>> = dao.epochsSince(counter)
     fun summarySince(counter: Long): Flow<Summary?> = dao.summarySince(counter)
 }

@@ -156,11 +156,20 @@ class HealthConnectWriter(private val context: Context) {
         )
     }
 
+    /**
+     * Health Connect upserts on `clientRecordId`, keeping whichever write has the higher
+     * `clientRecordVersion`. Versioning by wall-clock means a later export always wins, so a
+     * re-export can correct records already written — for instance after a clock correction moved
+     * their timestamps. Without a rising version the corrected copy would simply be ignored.
+     */
     private fun meta(clientRecordId: String) = Metadata.autoRecorded(
         device = ringDevice,
         clientRecordId = clientRecordId,
-        clientRecordVersion = 1L,
+        clientRecordVersion = exportVersion,
     )
+
+    /** One version stamp per writer instance, so a whole re-export shares it. */
+    private val exportVersion: Long = System.currentTimeMillis()
 
     /** Written explicitly so readers can reconstruct local civil time for backfilled history. */
     private fun zoneFor(instant: Instant) = ZoneId.systemDefault().rules.getOffset(instant)
