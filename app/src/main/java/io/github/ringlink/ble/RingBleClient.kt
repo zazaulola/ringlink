@@ -14,6 +14,7 @@ import android.os.Build
 import io.github.ringlink.L
 import io.github.ringlink.protocol.RingTransport
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -145,26 +146,50 @@ class RingBleClient(private val context: Context) : RingTransport {
     }
 
     override suspend fun write(bytes: ByteArray) {
-        writeLock.withLock {
-            val g = gatt ?: return
-            val ch = g.getService(SERVICE)?.getCharacteristic(WRITE_CHAR) ?: return
-            val done = CompletableDeferred<Boolean>()
-            pendingWrite = done
-            val started = if (Build.VERSION.SDK_INT >= 33) {
-                g.writeCharacteristic(
-                    ch, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                ) == BluetoothGatt.GATT_SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
-                run {
-                    ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                    ch.value = bytes
-                    g.writeCharacteristic(ch)
-                }
+        writeOnce(bytes)
+    }
+
+    /**
+     * Write once and report whether the ring actually acknowledged it.
+     *
+     * Android permits a single outstanding GATT operation per connection, so a write issued while
+     * another is in flight is refused outright — the return value is the only way to know that
+     * happened.
+     */
+    suspend fun writeOnce(bytes: ByteArray): Boolean = writeLock.withLock {
+        val g = gatt ?: return@withLock false
+        val ch = g.getService(SERVICE)?.getCharacteristic(WRITE_CHAR) ?: return@withLock false
+        val done = CompletableDeferred<Boolean>()
+        pendingWrite = done
+        val started = if (Build.VERSION.SDK_INT >= 33) {
+            g.writeCharacteristic(
+                ch, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            ) == BluetoothGatt.GATT_SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            run {
+                ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                ch.value = bytes
+                g.writeCharacteristic(ch)
             }
-            if (started) withTimeoutOrNull(WRITE_TIMEOUT_MS) { done.await() }
-            pendingWrite = null
         }
+        val ok = started && (withTimeoutOrNull(WRITE_TIMEOUT_MS) { done.await() } ?: false)
+        pendingWrite = null
+        ok
+    }
+
+    /**
+     * Keep trying until the ring takes the command.
+     *
+     * Used for one-shot commands like a buzz, which have no stream to recover them: the sync engine
+     * re-reads a page it failed to ack, but a dropped buzz is simply a buzz the user never feels.
+     */
+    suspend fun writeReliably(bytes: ByteArray, attempts: Int = 8): Boolean {
+        repeat(attempts) { attempt ->
+            if (writeOnce(bytes)) return true
+            delay(RETRY_BASE_MS + attempt * RETRY_STEP_MS)
+        }
+        return false
     }
 
     fun disconnect() {
@@ -183,6 +208,8 @@ class RingBleClient(private val context: Context) : RingTransport {
         val NOTIFY_CHAR: UUID = UUID.fromString("8327ad97-2d87-4a22-a8ce-6dd7971c0437")
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val WRITE_TIMEOUT_MS = 5_000L
+        private const val RETRY_BASE_MS = 120L
+        private const val RETRY_STEP_MS = 60L
 
         /** Ring advertising names look like "RingConn Gen3-F749". */
         fun looksLikeRing(name: String?): Boolean =

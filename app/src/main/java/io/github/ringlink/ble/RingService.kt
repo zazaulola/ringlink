@@ -51,8 +51,20 @@ class RingService : Service() {
     private lateinit var clock: RingClock
 
     private var idleJob: Job? = null
+    private var watchdogJob: Job? = null
     private var callMonitor: CallMonitor? = null
     private val busy = Mutex()
+
+    /**
+     * Serialises connection attempts. RingBleClient.connect() tears down any existing link before
+     * starting a fresh one, so two callers racing here — say three notifications arriving while the
+     * ring is away — would each destroy the others' half-open connection and all of them would
+     * fail. Concurrent callers now queue and share whichever attempt is already in flight.
+     */
+    private val connecting = Mutex()
+
+    /** Per-notification-group debounce, keyed by group or package. */
+    private val lastBuzz = HashMap<String, Long>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,16 +87,41 @@ class RingService : Service() {
         when (intent?.action) {
             ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
             ACTION_SYNC -> scope.launch { syncNow(force = true) }
-            ACTION_BUZZ -> scope.launch { buzz() }
+            ACTION_BUZZ -> {
+                val key = intent.getStringExtra(EXTRA_KEY)
+                scope.launch { buzz(key) }
+            }
             ACTION_REEXPORT -> scope.launch { reExport() }
             else -> scope.launch { ensureConnected() }
         }
+        startWatchdog()
         return START_STICKY
+    }
+
+    /**
+     * Keeps the link warm.
+     *
+     * A cold connect takes 10-20 s because the ring only advertises periodically, which is long
+     * enough that the first notification after an idle spell misses its buzz entirely. Reconnecting
+     * in the background means the link is already up when a notification actually arrives.
+     */
+    private fun startWatchdog() {
+        if (watchdogJob?.isActive == true) return
+        watchdogJob = scope.launch {
+            while (isActive) {
+                delay(WATCHDOG_INTERVAL_MS)
+                if (settings.ringAddress != null && !client.isConnected) {
+                    L.d("watchdog: link is down, reconnecting")
+                    ensureConnected()
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
         instance = null
         idleJob?.cancel()
+        watchdogJob?.cancel()
         callMonitor?.stop()
         client.disconnect()
         scope.cancel()
@@ -93,9 +130,10 @@ class RingService : Service() {
 
     // --- connection ------------------------------------------------------------------------------
 
-    private suspend fun ensureConnected(): Boolean {
-        if (client.isConnected) return true
-        val address = settings.ringAddress ?: return false
+    private suspend fun ensureConnected(): Boolean = connecting.withLock {
+        // Re-check inside the lock: while we were queued, another caller may have connected.
+        if (client.isConnected) return@withLock true
+        val address = settings.ringAddress ?: return@withLock false
         state.value = state.value.copy(status = "Connecting…")
         L.i("connecting to $address")
         val ok = client.connect(address)
@@ -106,7 +144,7 @@ class RingService : Service() {
             // A stale ring is worth draining as soon as it shows up, but never mid-night.
             if (shouldAutoSync()) syncNow(force = false)
         }
-        return ok
+        return@withLock ok
     }
 
     /**
@@ -134,10 +172,49 @@ class RingService : Service() {
     // --- actions ---------------------------------------------------------------------------------
 
     /** Buzz the ring. Safe to call at any time; the transport serialises it against a sync. */
-    suspend fun buzz() {
-        if (!ensureConnected()) return
-        L.i("buzz")
-        client.write(Opcodes.VIBRATE)
+    /**
+     * Buzz the ring, de-duplicating per [key] (a notification group or package).
+     *
+     * The cooldown is stamped only after the ring actually accepts the write. Debouncing on the
+     * attempt instead would let a buzz that never arrived — because the link was down — silence the
+     * next real notification, which is the worst of both worlds.
+     */
+    suspend fun buzz(key: String? = null) {
+        val requestedAt = System.currentTimeMillis()
+        if (key != null && recentlyBuzzed(key, requestedAt)) {
+            L.d("buzz skipped: $key buzzed moments ago")
+            return
+        }
+        if (!ensureConnected()) {
+            L.w("buzz dropped: ring not connected")
+            state.value = state.value.copy(status = "Buzz missed — ring not connected")
+            return
+        }
+        // Buzzing long after the notification is worse than not buzzing: the user has already seen
+        // the phone, and a stray pulse minutes later is just confusing.
+        val waited = System.currentTimeMillis() - requestedAt
+        if (waited > STALE_BUZZ_MS) {
+            L.w("buzz dropped: took ${waited}ms to connect, too late to be useful")
+            return
+        }
+        val ok = client.writeReliably(Opcodes.VIBRATE)
+        if (ok) {
+            if (key != null) synchronized(lastBuzz) { lastBuzz[key] = System.currentTimeMillis() }
+            L.i("buzz delivered${if (key != null) " ($key)" else ""}")
+        } else {
+            L.w("buzz dropped: ring did not accept the write")
+        }
+    }
+
+    private fun recentlyBuzzed(key: String, now: Long): Boolean = synchronized(lastBuzz) {
+        val previous = lastBuzz[key]
+        if (previous != null && now - previous < BUZZ_COOLDOWN_MS) return true
+        // Bounded: a phone sees many packages over a long uptime, and this map must not grow with
+        // them. Oldest entry goes when it is full.
+        if (lastBuzz.size >= MAX_TRACKED_KEYS) {
+            lastBuzz.entries.minByOrNull { it.value }?.let { lastBuzz.remove(it.key) }
+        }
+        false
     }
 
     /** Rewrite every stored record into Health Connect at its current (corrected) timestamp. */
@@ -235,6 +312,12 @@ class RingService : Service() {
         private const val CHANNEL_ID = "ring_link"
         private const val NOTIFICATION_ID = 1
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
+        private const val STALE_BUZZ_MS = 15_000L
+        private const val WATCHDOG_INTERVAL_MS = 45_000L
+        private const val BUZZ_COOLDOWN_MS = 3_000L
+        private const val MAX_TRACKED_KEYS = 64
+
+        const val EXTRA_KEY = "key"
 
         /**
          * The running instance, if any.
@@ -255,5 +338,18 @@ class RingService : Service() {
             val i = Intent(context, RingService::class.java).apply { this.action = action }
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }
+
+        /** Ask for a buzz on behalf of one notification group. */
+        fun buzzFor(context: Context, key: String) {
+            val i = Intent(context, RingService::class.java).apply {
+                action = ACTION_BUZZ
+                putExtra(EXTRA_KEY, key)
+            }
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
+        }
+
+        fun listenerComponent(context: Context) = android.content.ComponentName(
+            context, io.github.ringlink.trigger.RingNotificationListener::class.java,
+        )
     }
 }
