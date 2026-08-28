@@ -57,7 +57,6 @@ class HealthExporter(
         val records = ArrayList<Record>()
         records += writer.mapEpochs(epochs, clock)
         records += writer.mapSteps(states)
-        records += sleepSessions(epochs, clock)
 
         if (records.isNotEmpty()) writer.insert(records)
 
@@ -71,32 +70,24 @@ class HealthExporter(
     }
 
     /**
-     * Derive sleep sessions from contiguous runs on the sleep channel.
+     * Sleep sessions are deliberately NOT exported.
      *
-     * Sessions only — no stages. The ring does not transmit a hypnogram (the vendor app computes
-     * stages from the same raw signals), so emitting Light/Deep/REM here would be fabrication.
+     * The obvious-looking derivation — treat a contiguous run on the ring's "sleep" channel (0x00)
+     * as a night — is wrong. Measured over 43 hours of real data, the ring streams that channel
+     * continuously whether or not anyone is asleep, and the SpO2-bearing epochs are spread evenly
+     * across all 24 hours. Applying the contiguity rule to that data produced a single 32-hour
+     * "sleep session".
+     *
+     * The ring also never transmits a hypnogram: the vendor app derives sleep from the same raw
+     * signals we already store. Detecting sleep from heart rate and motion is therefore possible,
+     * but it is analysis rather than protocol, and until it is validated against something it would
+     * be inventing sleep the user did not have. Health data is exactly where guessing is worst.
      */
-    private fun sleepSessions(rows: List<EpochEntity>, clock: RingClock): List<Record> {
-        val sleep = rows.filter { it.channel == 0 }.sortedBy { it.counter }
-        if (sleep.isEmpty()) return emptyList()
-
-        val out = ArrayList<Record>()
-        var runStart = sleep.first().counter
-        var previous = runStart
-        for (row in sleep.drop(1)) {
-            if (row.counter - previous > MAX_GAP_SECONDS) {
-                emitSession(out, runStart, previous, clock)
-                runStart = row.counter
-            }
-            previous = row.counter
-        }
-        emitSession(out, runStart, previous, clock)
-        return out
-    }
-
-    private fun emitSession(out: MutableList<Record>, start: Long, end: Long, clock: RingClock) {
-        if (end - start >= MIN_SESSION_SECONDS) out += writer.sleepSession(start, end, clock)
-    }
+    suspend fun deleteExportedSleepSessions(): Boolean = runCatching {
+        if (!hasPermissions()) return false
+        writer.deleteAllSleepSessions()
+        true
+    }.getOrDefault(false)
 
     private companion object {
         const val BATCH = 500

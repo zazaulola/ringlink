@@ -220,6 +220,9 @@ class RingService : Service() {
     /** Rewrite every stored record into Health Connect at its current (corrected) timestamp. */
     private suspend fun reExport() {
         state.value = state.value.copy(status = "Re-exporting…")
+        // Older builds wrote sleep sessions derived from channel contiguity, which turned out to be
+        // unsound. Clear them out so the correction reaches anyone who already ran that version.
+        if (exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
         val n = runCatching { exporter.reExportAll(clock) }
             .onFailure { L.e("re-export failed", it) }
             .getOrDefault(0)

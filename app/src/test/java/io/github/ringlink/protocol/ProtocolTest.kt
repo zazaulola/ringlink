@@ -213,23 +213,36 @@ class RecordsTest {
 
 class RingClockTest {
     /**
-     * Pinned by a real Gen 3 record: counter 210001367 was the newest epoch in a sync that ran at
-     * 2026-08-27T01:46:21Z, and decodes to 01:42:47Z — 3.6 minutes earlier, as it should be.
+     * Pinned by a real Gen 3 sync: counter 210141032 was the newest of 1049 records fetched at
+     * 2026-08-28T20:34:13Z, and decodes to 20:30:32Z — 3.7 minutes earlier, as it should be.
      */
     @Test fun `epoch anchor matches a real gen3 record`() {
         val clock = RingClock()
-        assertEquals(1_787_794_967L, clock.toUnixSeconds(210_001_367L))
+        assertEquals(1_787_949_032L, clock.toUnixSeconds(210_141_032L))
     }
 
-    /** The vendor app's sync-open cursor lives in a different space, exactly 4 hours ahead. */
-    @Test fun `cursor space is four hours ahead of record space`() {
-        assertEquals(4 * 3600L, RingClock.CURSOR_EPOCH - RingClock.DEFAULT_EPOCH)
+    /** The two constants in circulation differ by exactly four hours. */
+    @Test fun `the two candidate anchors are four hours apart`() {
+        assertEquals(4 * 3600L, RingClock.DEFAULT_EPOCH - RingClock.ALTERNATE_EPOCH)
+    }
+
+    /**
+     * A whole-hour base shift must be recoverable. Observed for real: the anchor was settled on the
+     * earlier constant, then every record started arriving four hours stale, which is the shape of
+     * the ring's own clock having been re-set.
+     */
+    @Test fun `records arriving persistently stale re-open a settled anchor`() {
+        val clock = RingClock(RingClock.ALTERNATE_EPOCH, calibrated = true)
+        val now = 1_787_949_032L
+        val newest = now - 4 * 3600L - RingClock.ALTERNATE_EPOCH
+        assertTrue(clock.calibrate(newest, now))
+        assertEquals(RingClock.DEFAULT_EPOCH, clock.epoch())
     }
 
     /**
      * Regression: a mis-parsed page once reported a counter four hours ahead, and calibration
-     * happily re-anchored the whole archive to make that counter look like "now". Once the anchor
-     * is settled it must stay put.
+     * happily re-anchored the whole archive to make that counter look like "now". A record from
+     * the future is impossible, so a settled anchor must never move backwards for one.
      */
     @Test fun `a settled anchor ignores a bogus future counter`() {
         val clock = RingClock(RingClock.DEFAULT_EPOCH, calibrated = true)

@@ -26,15 +26,18 @@ something the vendor app deliberately does not do, since it restricts haptics to
 |---|---|
 | **Syncs history** | Heart rate, HRV (RMSSD), SpO₂, respiratory rate and motion, per 2.5-minute epoch, from both the sleep and all-day channels |
 | **Live device state** | Battery, step count and two skin-temperature channels, streamed while connected |
-| **Writes Health Connect** | `HeartRateRecord`, `HeartRateVariabilityRmssdRecord`, `OxygenSaturationRecord`, `RespiratoryRateRecord`, `SleepSessionRecord`, `StepsRecord` |
+| **Writes Health Connect** | `HeartRateRecord`, `HeartRateVariabilityRmssdRecord`, `OxygenSaturationRecord`, `RespiratoryRateRecord`, `StepsRecord` |
 | **Buzzes the ring** | On notifications and incoming calls, using the captured Gen 3 vibrate command |
 | **Keeps it local** | Everything lands in SQLite first; Health Connect export is a separate, retryable step |
 
 ## What it deliberately does not do
 
-- **No sleep stages.** The ring never transmits a hypnogram — the vendor app computes stages from
-  the same raw signals. RingLink writes sleep *sessions* only. Inventing Light/Deep/REM would be
-  fabricating data.
+- **No sleep at all — not even sessions.** The ring never transmits a hypnogram, and it does not
+  mark when you were asleep either. An earlier version derived sessions from contiguous runs on the
+  ring's "sleep" channel; measured against 43 hours of real data that was simply wrong — the ring
+  streams that channel around the clock, and the rule produced a single 32-hour "night". Sleep can
+  probably be inferred from the heart-rate and motion data RingLink already stores, but that is
+  analysis, not protocol, and unvalidated sleep is worse than none.
 - **No stress / readiness / recovery scores.** Those are vendor analytics, and Health Connect has no
   record type for them.
 - **No pulse waveform.** The ring's `0x47` pages are a sparse 15-minute optical trend (one sample per

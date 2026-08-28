@@ -33,13 +33,23 @@ class RingClock(
      */
     fun calibrate(newestCounter: Long, nowUnixSeconds: Long): Boolean {
         if (newestCounter <= 0) return false
-        // Bootstrap only. A shifted anchor makes a wrongly-dated record look like "now", so a
-        // recalibration can always justify itself — which means repeated calibration is a way to
-        // drift, not to stay accurate. The ring's convention does not change, so settle it once.
-        if (calibrated) return false
-        calibrated = true
         val residual = nowUnixSeconds - newestCounter
-        val hours = Math.round((residual - epochSeconds) / 3600.0)
+        val errorHours = (residual - epochSeconds) / 3600.0
+        // Two competing failure modes. Re-anchoring on every sync is a drift mechanism, because a
+        // shifted anchor makes a wrongly-dated record look like "now" and so always justifies
+        // itself. But the ring's base is not immutable either: it has been observed to jump by a
+        // whole 4 hours, apparently when the vendor app sets the ring's clock. So: settle it once,
+        // then only revisit it when the disagreement is far too large to be drift or a stale record.
+        if (calibrated) {
+            // Only ever move the anchor FORWARD once it is settled. The two situations look alike
+            // arithmetically but not physically: a record that appears stale can be genuine (the
+            // ring's base really has been seen to jump), while a record that appears to come from
+            // the future cannot be — that is a mis-parse, and "correcting" for it would drag every
+            // stored timestamp along with it.
+            if (errorHours < RECALIBRATE_HOURS) return false
+        }
+        calibrated = true
+        val hours = Math.round(errorHours)
         if (hours == 0L) return false
         val candidate = epochSeconds + hours * 3600L
         if (candidate !in MIN_EPOCH..MAX_EPOCH) return false
@@ -52,22 +62,28 @@ class RingClock(
 
     companion object {
         /**
-         * 2019-12-31 12:00:00 UTC — the anchor for RECORD COUNTERS.
+         * 2019-12-31 16:00:00 UTC — the anchor for RECORD COUNTERS.
          *
-         * The long-standing "4-hour ambiguity" between reverse-engineering projects turns out not
-         * to be a disagreement about one number: the ring uses two time spaces 14400 s apart.
-         * Measured on a Gen 3 (FR05):
+         * Two constants circulate, exactly 14400 s apart, and the disagreement is real rather than
+         * one project simply being wrong. Measured on a Gen 3 (FR05):
          *
-         *  - record counters in 0x4c pages anchor at 1577793600 — a record decoded with it lands
-         *    3.6 minutes before the sync that fetched it, which is exactly right;
-         *  - the cursor the vendor app puts in its 02 00 sync-open anchors at 1577808000.
+         *  - the cursor the vendor app writes in its 02 00 sync-open matches its capture time
+         *    exactly under this constant, and the ring must read that cursor in the same space it
+         *    numbers records in, since the cursor means "drain up to about here";
+         *  - a 1049-record dataset ends 3.7 minutes before the sync that fetched it under this
+         *    constant, and four hours stale under the other.
          *
-         * Health data is timestamped from record counters, so this is the anchor that matters.
+         * A smaller earlier dataset pointed the other way, which is why [calibrate] can still
+         * re-anchor: the ring's base itself appears to shift by a whole 4 hours, seemingly when the
+         * vendor app sets the ring's clock.
          */
-        const val DEFAULT_EPOCH = 1_577_793_600L
+        const val DEFAULT_EPOCH = 1_577_808_000L
 
-        /** The vendor app's sync-open cursor space, 4 h ahead of record counters. */
-        const val CURSOR_EPOCH = 1_577_808_000L
+        /** The other constant in circulation, 4 h earlier. See the class comment. */
+        const val ALTERNATE_EPOCH = 1_577_793_600L
+
+        /** Only a disagreement this large re-opens a settled anchor. */
+        private const val RECALIBRATE_HOURS = 2.0
 
         /** Accept only anchors within a day of the documented candidates. */
         private const val MIN_EPOCH = DEFAULT_EPOCH - 86_400L

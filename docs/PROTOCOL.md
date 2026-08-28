@@ -122,3 +122,9 @@ vendor app's own writes at the moment it buzzed the ring, then confirmed by repl
 Sleep stages, stress/readiness scores and the nightly respiratory summary are **computed by the
 vendor app**, not transmitted. Skin temperature appears only in the live descriptor, never in the
 bulk history.
+
+**Nor is sleep itself.** Channel `0x00` is conventionally called the "sleep" channel, but the ring
+streams it continuously: across 43 hours of measured data its epochs are contiguous day and night,
+and the SpO2-bearing ones are spread evenly over all 24 hours. Contiguity on that channel therefore
+says nothing about whether anyone was asleep — deriving sessions from it produced a 32-hour "night".
+Nothing in the protocol marks a sleep period.

@@ -12,6 +12,7 @@ import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.Metadata
+import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Percentage
 import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
@@ -136,6 +137,20 @@ class HealthConnectWriter(private val context: Context) {
             )
         }
         return out
+    }
+
+    /**
+     * Remove every sleep session this app wrote. An app may only delete its own records, so a
+     * user's other sleep data is untouched.
+     */
+    suspend fun deleteAllSleepSessions() {
+        client().deleteRecords(
+            SleepSessionRecord::class,
+            TimeRangeFilter.between(
+                Instant.ofEpochSecond(0),
+                Instant.now().plusSeconds(86_400),
+            ),
+        )
     }
 
     /**
