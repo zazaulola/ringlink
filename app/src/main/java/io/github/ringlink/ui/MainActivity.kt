@@ -103,6 +103,7 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                             connected = live?.connected == true,
                             battery = live?.battery,
                             onCharger = live?.onCharger == true,
+                            canVibrate = ring.canVibrate,
                             onRemove = { vm.removeRing(ring.address) },
                         )
                     }
@@ -215,6 +216,7 @@ private fun RingRow(
     connected: Boolean,
     battery: Int?,
     onCharger: Boolean,
+    canVibrate: Boolean,
     onRemove: () -> Unit,
 ) {
     Row(
@@ -230,7 +232,8 @@ private fun RingRow(
                 onCharger -> "charging (will not buzz)"
                 else -> "worn"
             }
-            Text("$charge · $where", style = MaterialTheme.typography.bodySmall)
+            val motor = if (canVibrate) "" else " · no motor, signals with its LED"
+            Text("$charge · $where$motor", style = MaterialTheme.typography.bodySmall)
         }
         OutlinedButton(onClick = onRemove) { Text("Forget") }
     }

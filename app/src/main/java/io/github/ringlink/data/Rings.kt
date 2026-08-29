@@ -8,7 +8,21 @@ data class Ring(val address: String, val name: String) {
     /** Short label for the UI: "RingConn Gen3-F749" -> "F749". */
     val shortName: String get() = name.substringAfterLast('-', name)
 
+    /** Generation, read from the advertised name ("RingConn Gen3-F749" -> 3). Null if unknown. */
+    val generation: Int? get() = GENERATION.find(name)?.groupValues?.get(1)?.toIntOrNull()
+
+    /**
+     * Whether this ring can buzz at all.
+     *
+     * Only Gen 3 has a vibration motor — earlier rings are entirely passive, so a vibrate command
+     * to one is silently ignored by the hardware. Worth knowing rather than discovering as a
+     * mysteriously silent ring.
+     */
+    val canVibrate: Boolean get() = (generation ?: 3) >= 3
+
     companion object {
+        private val GENERATION = Regex("""Gen\s*(\d+)""", RegexOption.IGNORE_CASE)
+
         fun listFromJson(raw: String?): List<Ring> {
             if (raw.isNullOrBlank()) return emptyList()
             return runCatching {

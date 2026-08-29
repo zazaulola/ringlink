@@ -214,14 +214,32 @@ class RingService : Service() {
 
         var delivered = false
         targets.forEach { ring ->
-            if (clientFor(ring.address).writeReliably(Opcodes.VIBRATE)) {
-                delivered = true
-                L.i("buzz delivered to ${ring.shortName}${if (key != null) " ($key)" else ""}")
+            val client = clientFor(ring.address)
+            val ok = if (ring.canVibrate) {
+                client.writeReliably(Opcodes.VIBRATE)
             } else {
-                L.w("buzz dropped: ${ring.shortName} did not accept the write")
+                // Only Gen 3 has a motor, but every generation has the Find-My-Ring LED — so an
+                // older ring signals with light rather than saying nothing at all.
+                blink(client)
+            }
+            if (ok) {
+                delivered = true
+                val how = if (ring.canVibrate) "buzz" else "blink"
+                L.i("$how delivered to ${ring.shortName}${if (key != null) " ($key)" else ""}")
+            } else {
+                L.w("alert dropped: ${ring.shortName} did not accept the write")
             }
         }
         if (delivered && key != null) synchronized(lastBuzz) { lastBuzz[key] = System.currentTimeMillis() }
+    }
+
+    /** Pulse the locator LED: the only signal a ring without a motor can give. */
+    private suspend fun blink(client: RingBleClient): Boolean {
+        if (!client.writeReliably(Opcodes.LED_ON)) return false
+        delay(LED_ON_MS)
+        // Best effort: the light times out on its own, so a failed off is not a failed alert.
+        client.writeReliably(Opcodes.LED_OFF)
+        return true
     }
 
     private fun recentlyBuzzed(key: String, now: Long): Boolean = synchronized(lastBuzz) {
@@ -355,6 +373,7 @@ class RingService : Service() {
         val onCharger: Boolean = false,
     ) {
         val shortName: String get() = name.substringAfterLast('-', name)
+        val canVibrate: Boolean get() = Ring(address, name).canVibrate
     }
 
     data class State(
@@ -379,6 +398,7 @@ class RingService : Service() {
         private const val STALE_BUZZ_MS = 15_000L
         private const val WATCHDOG_INTERVAL_MS = 45_000L
         private const val BUZZ_COOLDOWN_MS = 3_000L
+        private const val LED_ON_MS = 400L
         private const val MAX_TRACKED_KEYS = 64
 
         @Volatile
