@@ -48,7 +48,10 @@ something the vendor app deliberately does not do, since it restricts haptics to
 
 - Android 8+ (built against SDK 36; Health Connect is part of the OS on Android 14+, and a Play
   Store app below that).
-- One or more **RingConn Gen 3** rings, already paired with the phone. Bluetooth bonds live in the system stack and
+- One or more **RingConn Gen 3** rings. A ring already paired with the phone is picked up without
+  scanning — Bluetooth bonds live in the system and are shared between apps. A ring the phone has
+  never seen is adopted with **Search for a new ring**, which needs the ring out of its charger:
+  a charging ring does not advertise and cannot be found. Bluetooth bonds live in the system stack and
   are shared between apps, so the pairing the vendor app created is reused — RingLink never scans.
 
 ## Install

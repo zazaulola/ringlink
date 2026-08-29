@@ -114,12 +114,24 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     }
                 }
 
-                if (ui.candidates.isNotEmpty()) {
-                    Text("Add a ring", style = MaterialTheme.typography.titleSmall)
-                    ui.candidates.forEach { candidate ->
-                        OutlinedButton(onClick = { vm.addRing(candidate) }, Modifier.fillMaxWidth()) {
-                            Text("${candidate.name}  (${candidate.address})")
-                        }
+                Text("Add a ring", style = MaterialTheme.typography.titleSmall)
+                ui.candidates.forEach { candidate ->
+                    OutlinedButton(onClick = { vm.addRing(candidate) }, Modifier.fillMaxWidth()) {
+                        Text("${candidate.name}  (paired)")
+                    }
+                }
+                ui.discovered.forEach { found ->
+                    OutlinedButton(onClick = { vm.addDiscovered(found) }, Modifier.fillMaxWidth()) {
+                        Text("${found.name}  (${found.rssi} dBm)")
+                    }
+                }
+                if (ui.scanning) {
+                    Text("Searching… take the ring off its charger and hold it near the phone.",
+                        style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = { vm.stopScan() }, Modifier.fillMaxWidth()) { Text("Stop") }
+                } else {
+                    OutlinedButton(onClick = { vm.startScan() }, Modifier.fillMaxWidth()) {
+                        Text("Search for a new ring")
                     }
                 }
             }
@@ -247,7 +259,10 @@ private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
 }
 
 private fun requiredPermissions(): Array<String> = buildList {
-    if (Build.VERSION.SDK_INT >= 31) add(Manifest.permission.BLUETOOTH_CONNECT)
+    if (Build.VERSION.SDK_INT >= 31) {
+        add(Manifest.permission.BLUETOOTH_CONNECT)
+        add(Manifest.permission.BLUETOOTH_SCAN)
+    }
     if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     add(Manifest.permission.READ_PHONE_STATE)
 }.toTypedArray()

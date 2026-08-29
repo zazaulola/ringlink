@@ -7,7 +7,9 @@ import android.content.Context
 import android.provider.Settings as AndroidSettings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.ringlink.ble.DiscoveredRing
 import io.github.ringlink.ble.RingBleClient
+import io.github.ringlink.ble.RingScanner
 import io.github.ringlink.ble.RingService
 import io.github.ringlink.data.Ring
 import io.github.ringlink.data.RingDatabase
@@ -27,6 +29,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class BondedRing(val name: String, val address: String)
 
@@ -40,6 +43,8 @@ enum class HistoryWindow(val label: String, val seconds: Long) {
 data class UiState(
     val rings: List<Ring> = emptyList(),
     val candidates: List<BondedRing> = emptyList(),
+    val discovered: List<DiscoveredRing> = emptyList(),
+    val scanning: Boolean = false,
     val storedEpochs: Int = 0,
     val pendingExport: Int = 0,
     val healthConnectAvailable: Boolean = false,
@@ -128,6 +133,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }.getOrDefault(emptyList())
     }
 
+    private var scanJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Look for rings that are not paired yet.
+     *
+     * Adopting a new ring is the only thing that needs a scan; once bonded it is reachable without
+     * one. Connecting to a discovered ring is what creates the bond — the ring pairs with
+     * "Just Works", so there is no code to enter.
+     */
+    fun startScan() {
+        if (scanJob?.isActive == true) return
+        _ui.value = _ui.value.copy(scanning = true, discovered = emptyList())
+        scanJob = viewModelScope.launch {
+            val known = settings.rings.map { it.address.lowercase() }.toSet()
+            withTimeoutOrNull(SCAN_MILLIS) {
+                RingScanner(getApplication()).scan().collect { list ->
+                    _ui.value = _ui.value.copy(
+                        discovered = list.filterNot { it.address.lowercase() in known },
+                    )
+                }
+            }
+            _ui.value = _ui.value.copy(scanning = false)
+        }
+    }
+
+    fun stopScan() {
+        scanJob?.cancel()
+        _ui.value = _ui.value.copy(scanning = false)
+    }
+
+    /** Adopt a discovered ring: storing it makes the service connect, which performs the bonding. */
+    fun addDiscovered(ring: DiscoveredRing) {
+        settings.addRing(Ring(ring.address, ring.name))
+        stopScan()
+        refresh()
+        RingService.start(getApplication())
+    }
+
     fun addRing(ring: BondedRing) {
         settings.addRing(Ring(ring.address, ring.name))
         refresh()
@@ -158,6 +201,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun syncNow() = RingService.start(getApplication(), RingService.ACTION_SYNC)
     fun testBuzz() = RingService.start(getApplication(), RingService.ACTION_BUZZ)
     fun reExport() = RingService.start(getApplication(), RingService.ACTION_REEXPORT)
+
+    private companion object {
+        const val SCAN_MILLIS = 20_000L
+    }
 
     private fun hasNotificationAccess(context: Context): Boolean {
         val enabled = AndroidSettings.Secure.getString(

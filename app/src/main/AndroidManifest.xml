@@ -4,6 +4,11 @@
     <!-- Connecting to an already-bonded ring needs only BLUETOOTH_CONNECT: no scanning, and
          therefore no location permission. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Only to adopt a ring that is not paired yet; a bonded ring needs no scanning.
+         neverForLocation keeps this from being treated as a location request. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
