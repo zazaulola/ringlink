@@ -76,7 +76,12 @@ class RingService : Service() {
         exporter = HealthExporter(this, repo, settings)
         clock = RingClock(settings.epochAnchor, settings.epochCalibrated)
         client = RingBleClient(this)
-        client.onConnectionChange = { up -> state.value = state.value.copy(connected = up) }
+        client.onConnectionChange = { up ->
+            state.value = state.value.copy(connected = up, status = if (up) "Connected" else "Disconnected")
+            // A background connect lands with no coroutine awaiting it, so the idle loop that
+            // answers the ring's heartbeats has to be started from here.
+            if (up) startIdleLoop() else idleJob?.cancel()
+        }
         if (settings.buzzOnCalls) {
             callMonitor = CallMonitor(this) { scope.launch { buzz() } }.also { it.start() }
         }
@@ -110,7 +115,9 @@ class RingService : Service() {
         watchdogJob = scope.launch {
             while (isActive) {
                 delay(WATCHDOG_INTERVAL_MS)
-                if (settings.ringAddress != null && !client.isConnected) {
+                if (settings.ringAddress != null && !client.isConnected &&
+                    !client.backgroundConnectArmed
+                ) {
                     L.d("watchdog: link is down, reconnecting")
                     ensureConnected()
                 }
@@ -247,7 +254,11 @@ class RingService : Service() {
 
     suspend fun syncNow(force: Boolean) {
         if (!force && !shouldAutoSync()) return
-        if (!ensureConnected()) return
+        if (!ensureConnected()) {
+            L.w("sync aborted: could not reach the ring")
+            state.value = state.value.copy(status = "Sync failed — ring unreachable")
+            return
+        }
         busy.withLock {
             // The sync owns the incoming stream while it runs.
             idleJob?.cancelAndJoin()

@@ -45,6 +45,16 @@ class RingBleClient(private val context: Context) : RingTransport {
     /** Set when the user asked to disconnect, so a drop is not auto-reconnected. */
     @Volatile private var closing = false
 
+    /**
+     * True while a patient background connect is pending.
+     *
+     * The ring advertises only intermittently, so a direct connect that happens to miss its window
+     * fails after 30 s. Rather than hammering it, we then arm an opportunistic connect and wait.
+     * Callers must not tear that down to start yet another direct attempt.
+     */
+    @Volatile var backgroundConnectArmed: Boolean = false
+        private set
+
     var onConnectionChange: ((Boolean) -> Unit)? = null
 
     private val callback = object : BluetoothGattCallback() {
@@ -52,6 +62,7 @@ class RingBleClient(private val context: Context) : RingTransport {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     isConnected = true
+                    backgroundConnectArmed = false
                     onConnectionChange?.invoke(true)
                     if (!connected.isCompleted) connected.complete(true)
                     g.discoverServices()
@@ -107,6 +118,10 @@ class RingBleClient(private val context: Context) : RingTransport {
 
     /** Connect to an already-bonded ring. Bonds are shared per device, not per app. */
     suspend fun connect(address: String, timeoutMs: Long = 30_000): Boolean {
+        // A patient background connect is already waiting for the ring to advertise. Starting
+        // another direct attempt would tear it down — which is how the ring ended up unreachable
+        // indefinitely: every retry cancelled the one mechanism that could still succeed.
+        if (backgroundConnectArmed) return false
         disconnect()
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             ?: return false
@@ -124,8 +139,25 @@ class RingBleClient(private val context: Context) : RingTransport {
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
 
         val up = withTimeoutOrNull(timeoutMs) { connected.await() } ?: false
-        if (!up) return false
+        if (!up) {
+            armBackgroundConnect(device)
+            return false
+        }
         return withTimeoutOrNull(timeoutMs) { servicesReady.await() } ?: false
+    }
+
+    /**
+     * Ask the controller to connect whenever the ring next shows up.
+     *
+     * autoConnect puts the address on the allow-list with no timeout: slow to land, but it does not
+     * need to coincide with an advertising window the way a direct connect does.
+     */
+    private fun armBackgroundConnect(device: BluetoothDevice) {
+        runCatching { gatt?.close() }
+        closing = false
+        backgroundConnectArmed = true
+        gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
+        L.i("direct connect missed the ring's advertising window; waiting in the background")
     }
 
     private fun subscribe(g: BluetoothGatt): Boolean {
@@ -194,6 +226,7 @@ class RingBleClient(private val context: Context) : RingTransport {
 
     fun disconnect() {
         closing = true
+        backgroundConnectArmed = false
         gatt?.let {
             runCatching { it.disconnect() }
             runCatching { it.close() }
