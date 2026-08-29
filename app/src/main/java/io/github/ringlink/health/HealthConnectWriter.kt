@@ -73,7 +73,9 @@ class HealthConnectWriter(private val context: Context) {
             val start = Instant.ofEpochSecond(clock.toUnixSeconds(row.counter))
             val end = start.plusSeconds(EPOCH_SECONDS)
             val zone = zoneFor(start)
-            val id = { kind: String -> "epoch-$kind-${row.counter}" }
+            // The ring's identity belongs in the key: two rings' counters collide, and without it
+            // one ring's readings would overwrite the other's inside Health Connect.
+            val id = { kind: String -> "epoch-${row.ringId}-$kind-${row.counter}" }
 
             row.heartRate?.let { hr ->
                 out += HeartRateRecord(
@@ -133,7 +135,7 @@ class HealthConnectWriter(private val context: Context) {
                 endTime = end,
                 endZoneOffset = zoneFor(end),
                 count = delta.toLong(),
-                metadata = meta("steps-${cur.recordedAt}"),
+                metadata = meta("steps-${cur.ringId}-${cur.recordedAt}"),
             )
         }
         return out

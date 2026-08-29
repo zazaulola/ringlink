@@ -28,6 +28,7 @@ something the vendor app deliberately does not do, since it restricts haptics to
 | **Live device state** | Battery, step count and two skin-temperature channels, streamed while connected |
 | **Writes Health Connect** | `HeartRateRecord`, `HeartRateVariabilityRmssdRecord`, `OxygenSaturationRecord`, `RespiratoryRateRecord`, `StepsRecord` |
 | **Buzzes the ring** | On notifications and incoming calls, using the captured Gen 3 vibrate command |
+| **Several rings at once** | Keep a spare on the charger and swap when the worn one runs low — every ring stays connected, and only the ones actually being worn are buzzed |
 | **Keeps it local** | Everything lands in SQLite first; Health Connect export is a separate, retryable step |
 
 ## What it deliberately does not do
@@ -47,7 +48,7 @@ something the vendor app deliberately does not do, since it restricts haptics to
 
 - Android 8+ (built against SDK 36; Health Connect is part of the OS on Android 14+, and a Play
   Store app below that).
-- A **RingConn Gen 3**, already paired with the phone. Bluetooth bonds live in the system stack and
+- One or more **RingConn Gen 3** rings, already paired with the phone. Bluetooth bonds live in the system stack and
   are shared between apps, so the pairing the vendor app created is reused — RingLink never scans.
 
 ## Install

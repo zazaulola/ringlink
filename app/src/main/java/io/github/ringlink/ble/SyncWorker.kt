@@ -26,7 +26,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
     override suspend fun doWork(): Result {
         val settings = Settings(applicationContext)
-        if (settings.ringAddress == null) return Result.success()
+        if (settings.rings.isEmpty()) return Result.success()
 
         val service = RingService.instance
         if (service == null) {
@@ -34,7 +34,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             return Result.retry()
         }
         return try {
-            service.syncNow(force = false)
+            service.syncAll(force = false)
             Result.success()
         } catch (t: Throwable) {
             L.e("periodic sync failed", t)

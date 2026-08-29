@@ -28,14 +28,14 @@ interface RingDao {
     @Query("SELECT * FROM device_state WHERE exportedAt IS NULL ORDER BY recordedAt LIMIT :limit")
     suspend fun unexportedDeviceStates(limit: Int): List<DeviceStateEntity>
 
-    @Query("UPDATE epochs SET exportedAt = :at WHERE counter IN (:counters)")
-    suspend fun markEpochsExported(counters: List<Long>, at: Long)
+    @Query("UPDATE epochs SET exportedAt = :at WHERE ringId = :ringId AND counter IN (:counters)")
+    suspend fun markEpochsExported(ringId: String, counters: List<Long>, at: Long)
 
-    @Query("UPDATE sport SET exportedAt = :at WHERE counter IN (:counters)")
-    suspend fun markSportExported(counters: List<Long>, at: Long)
+    @Query("UPDATE sport SET exportedAt = :at WHERE ringId = :ringId AND counter IN (:counters)")
+    suspend fun markSportExported(ringId: String, counters: List<Long>, at: Long)
 
-    @Query("UPDATE device_state SET exportedAt = :at WHERE recordedAt IN (:times)")
-    suspend fun markDeviceStatesExported(times: List<Long>, at: Long)
+    @Query("UPDATE device_state SET exportedAt = :at WHERE ringId = :ringId AND recordedAt IN (:times)")
+    suspend fun markDeviceStatesExported(ringId: String, times: List<Long>, at: Long)
 
     @Query("UPDATE epochs SET exportedAt = NULL")
     suspend fun clearEpochExports()
@@ -52,11 +52,11 @@ interface RingDao {
     @Query("SELECT COUNT(*) FROM epochs WHERE exportedAt IS NULL")
     fun pendingExportCount(): Flow<Int>
 
-    @Query("SELECT MAX(counter) FROM epochs")
-    suspend fun newestCounter(): Long?
+    @Query("SELECT MAX(counter) FROM epochs WHERE ringId = :ringId")
+    suspend fun newestCounter(ringId: String): Long?
 
-    @Query("SELECT * FROM device_state ORDER BY recordedAt DESC LIMIT 1")
-    fun latestDeviceState(): Flow<DeviceStateEntity?>
+    @Query("SELECT * FROM device_state WHERE ringId = :ringId ORDER BY recordedAt DESC LIMIT 1")
+    fun latestDeviceState(ringId: String): Flow<DeviceStateEntity?>
 
     @Query("SELECT * FROM epochs WHERE counter BETWEEN :from AND :to ORDER BY counter")
     suspend fun epochsBetween(from: Long, to: Long): List<EpochEntity>

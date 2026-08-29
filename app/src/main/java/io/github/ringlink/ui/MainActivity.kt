@@ -87,35 +87,39 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     HistoryScreen(vm)
                     return@Column
                 }
-            SectionCard("Ring") {
-                if (ui.ring == null) {
-                    Text("No ring selected.")
+            SectionCard("Rings") {
+                if (ui.rings.isEmpty()) {
+                    Text("No rings yet.")
                     Text(
                         "Rings already paired with this phone appear below — pairing is shared " +
                             "between apps, so there is nothing to scan for.",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    ui.candidates.forEach { ring ->
-                        OutlinedButton(onClick = { vm.selectRing(ring) }, Modifier.fillMaxWidth()) {
-                            Text("${ring.name}  (${ring.address})")
-                        }
-                    }
-                    if (ui.candidates.isEmpty()) {
-                        Text(
-                            "Nothing found. Pair the ring first (the vendor app does this), " +
-                                "then grant Nearby devices permission and refresh.",
-                            style = MaterialTheme.typography.bodySmall,
+                } else {
+                    ui.rings.forEach { ring ->
+                        val live = service.rings.firstOrNull { it.address == ring.address }
+                        RingRow(
+                            title = ring.shortName,
+                            connected = live?.connected == true,
+                            battery = live?.battery,
+                            onCharger = live?.onCharger == true,
+                            onRemove = { vm.removeRing(ring.address) },
                         )
                     }
-                } else {
-                    Text(ui.ring!!.name, style = MaterialTheme.typography.titleMedium)
-                    Text(if (service.connected) "Connected" else "Disconnected")
-                    service.battery?.let { Text("Battery $it%") }
                     Text(service.status, style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { vm.connect() }) { Text("Connect") }
                         Button(onClick = { vm.syncNow() }, enabled = !service.syncing) { Text("Sync now") }
                         OutlinedButton(onClick = { vm.testBuzz() }) { Text("Buzz") }
+                    }
+                }
+
+                if (ui.candidates.isNotEmpty()) {
+                    Text("Add a ring", style = MaterialTheme.typography.titleSmall)
+                    ui.candidates.forEach { candidate ->
+                        OutlinedButton(onClick = { vm.addRing(candidate) }, Modifier.fillMaxWidth()) {
+                            Text("${candidate.name}  (${candidate.address})")
+                        }
                     }
                 }
             }
@@ -142,7 +146,7 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     !ui.healthConnectAvailable ->
                         Text("Not available on this device.")
                     ui.healthConnectGranted ->
-                        Text("Connected — heart rate, HRV, SpO₂, respiratory rate, sleep and steps.")
+                        Text("Connected — heart rate, HRV, SpO₂, respiratory rate and steps.")
                     else -> {
                         Text("Permission needed to write your ring data.")
                         Button(onClick = { healthPermissions.launch(vm.exporter.permissions) }) {
@@ -184,6 +188,39 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
             }
             }
         }
+    }
+}
+
+/**
+ * One ring: whether it is reachable, its charge, and whether it is sitting in a charger.
+ *
+ * The charging marker matters — a charging ring is deliberately not buzzed, so showing it here
+ * explains why a notification went to the other one.
+ */
+@Composable
+private fun RingRow(
+    title: String,
+    connected: Boolean,
+    battery: Int?,
+    onCharger: Boolean,
+    onRemove: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            val charge = battery?.let { "$it%" } ?: "—"
+            val where = when {
+                !connected -> "disconnected"
+                onCharger -> "charging (will not buzz)"
+                else -> "worn"
+            }
+            Text("$charge · $where", style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedButton(onClick = onRemove) { Text("Forget") }
     }
 }
 

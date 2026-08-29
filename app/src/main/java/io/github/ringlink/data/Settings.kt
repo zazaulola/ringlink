@@ -8,13 +8,33 @@ class Settings(context: Context) {
 
     private val prefs = context.getSharedPreferences("ringlink", Context.MODE_PRIVATE)
 
-    var ringAddress: String?
-        get() = prefs.getString(KEY_ADDRESS, null)
-        set(v) = prefs.edit { putString(KEY_ADDRESS, v) }
+    /**
+     * Every ring the user owns.
+     *
+     * More than one is a deliberate use case: keep a spare on the charger, swap when the worn one
+     * runs low, and never lose coverage. All of them are connected simultaneously — Android is happy
+     * to hold several GATT links — so notifications reach whichever ring is actually on a finger.
+     */
+    var rings: List<Ring>
+        get() {
+            val stored = Ring.listFromJson(prefs.getString(KEY_RINGS, null))
+            if (stored.isNotEmpty()) return stored
+            // Migrate the single-ring setting written by earlier versions.
+            val legacy = prefs.getString(KEY_ADDRESS, null) ?: return emptyList()
+            return listOf(Ring(legacy, prefs.getString(KEY_NAME, null) ?: legacy))
+        }
+        set(v) = prefs.edit { putString(KEY_RINGS, Ring.listToJson(v)) }
 
-    var ringName: String?
-        get() = prefs.getString(KEY_NAME, null)
-        set(v) = prefs.edit { putString(KEY_NAME, v) }
+    fun addRing(ring: Ring) {
+        if (rings.none { it.address.equals(ring.address, ignoreCase = true) }) rings = rings + ring
+    }
+
+    fun removeRing(address: String) {
+        rings = rings.filterNot { it.address.equals(address, ignoreCase = true) }
+    }
+
+    /** The first configured ring, used for one-off actions and for migrating old rows. */
+    val primaryAddress: String? get() = rings.firstOrNull()?.address
 
     var epochAnchor: Long
         get() = prefs.getLong(KEY_EPOCH, io.github.ringlink.protocol.RingClock.DEFAULT_EPOCH)
@@ -65,6 +85,7 @@ class Settings(context: Context) {
     }
 
     private companion object {
+        const val KEY_RINGS = "rings"
         const val KEY_ADDRESS = "ring_address"
         const val KEY_NAME = "ring_name"
         const val KEY_EPOCH = "epoch_anchor"

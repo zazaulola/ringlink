@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.ringlink.ble.RingBleClient
 import io.github.ringlink.ble.RingService
+import io.github.ringlink.data.Ring
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
@@ -37,7 +38,7 @@ enum class HistoryWindow(val label: String, val seconds: Long) {
 }
 
 data class UiState(
-    val ring: BondedRing? = null,
+    val rings: List<Ring> = emptyList(),
     val candidates: List<BondedRing> = emptyList(),
     val storedEpochs: Int = 0,
     val pendingExport: Int = 0,
@@ -92,11 +93,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         val app = getApplication<Application>()
-        val saved = settings.ringAddress?.let { BondedRing(settings.ringName ?: it, it) }
         viewModelScope.launch {
+            val configured = settings.rings
             _ui.value = _ui.value.copy(
-                ring = saved,
-                candidates = bondedRings(),
+                rings = configured,
+                // Offer only rings that are not configured yet.
+                candidates = bondedRings().filterNot { c ->
+                    configured.any { it.address.equals(c.address, ignoreCase = true) }
+                },
                 healthConnectAvailable = exporter.isAvailable(),
                 healthConnectGranted = runCatching { exporter.hasPermissions() }.getOrDefault(false),
                 notificationAccess = hasNotificationAccess(app),
@@ -124,11 +128,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }.getOrDefault(emptyList())
     }
 
-    fun selectRing(ring: BondedRing) {
-        settings.ringAddress = ring.address
-        settings.ringName = ring.name
-        _ui.value = _ui.value.copy(ring = ring)
+    fun addRing(ring: BondedRing) {
+        settings.addRing(Ring(ring.address, ring.name))
+        refresh()
         RingService.start(getApplication())
+    }
+
+    fun removeRing(address: String) {
+        settings.removeRing(address)
+        refresh()
     }
 
     fun setBuzzOnNotifications(on: Boolean) {

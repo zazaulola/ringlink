@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import io.github.ringlink.L
+import io.github.ringlink.data.Ring
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
@@ -33,38 +34,33 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Calendar
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Owns the ring connection for as long as the user wants it.
+ * Holds a live connection to every configured ring.
  *
- * Runs as a `connectedDevice` foreground service: that is the one Bluetooth-relevant service type
- * with no runtime cap and no restriction on starting from boot, which is exactly what a wearable
- * link needs.
+ * Several rings at once is the point, not a curiosity: one charges while the other is worn, and the
+ * user swaps when the worn one runs low. Android is happy to hold multiple GATT links, so all of
+ * them stay connected and a notification buzzes whichever ring is actually on a finger.
+ *
+ * Runs as a `connectedDevice` foreground service — the one Bluetooth-relevant service type with no
+ * runtime cap and no restriction on starting from boot.
  */
 class RingService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob())
-    private lateinit var client: RingBleClient
     private lateinit var settings: Settings
     private lateinit var repo: RingRepository
     private lateinit var exporter: HealthExporter
     private lateinit var clock: RingClock
 
-    private var idleJob: Job? = null
+    private val clients = ConcurrentHashMap<String, RingBleClient>()
+    private val connectLocks = ConcurrentHashMap<String, Mutex>()
+    private val idleJobs = ConcurrentHashMap<String, Job>()
+    private val lastBuzz = HashMap<String, Long>()
+    private val syncing = Mutex()
     private var watchdogJob: Job? = null
     private var callMonitor: CallMonitor? = null
-    private val busy = Mutex()
-
-    /**
-     * Serialises connection attempts. RingBleClient.connect() tears down any existing link before
-     * starting a fresh one, so two callers racing here — say three notifications arriving while the
-     * ring is away — would each destroy the others' half-open connection and all of them would
-     * fail. Concurrent callers now queue and share whichever attempt is already in flight.
-     */
-    private val connecting = Mutex()
-
-    /** Per-notification-group debounce, keyed by group or package. */
-    private val lastBuzz = HashMap<String, Long>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,111 +71,110 @@ class RingService : Service() {
         repo = RingRepository(RingDatabase.get(this).dao())
         exporter = HealthExporter(this, repo, settings)
         clock = RingClock(settings.epochAnchor, settings.epochCalibrated)
-        client = RingBleClient(this)
-        client.onConnectionChange = { up ->
-            state.value = state.value.copy(connected = up, status = if (up) "Connected" else "Disconnected")
-            // A background connect lands with no coroutine awaiting it, so the idle loop that
-            // answers the ring's heartbeats has to be started from here.
-            if (up) startIdleLoop() else idleJob?.cancel()
-        }
         if (settings.buzzOnCalls) {
-            callMonitor = CallMonitor(this) { scope.launch { buzz() } }.also { it.start() }
+            callMonitor = CallMonitor(this) { scope.launch { buzz(null) } }.also { it.start() }
         }
         startForegroundNotification()
+        publishRings()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
-            ACTION_SYNC -> scope.launch { syncNow(force = true) }
+            ACTION_SYNC -> scope.launch { syncAll(force = true) }
             ACTION_BUZZ -> {
                 val key = intent.getStringExtra(EXTRA_KEY)
                 scope.launch { buzz(key) }
             }
             ACTION_REEXPORT -> scope.launch { reExport() }
-            else -> scope.launch { ensureConnected() }
+            else -> scope.launch { connectAll() }
         }
         startWatchdog()
         return START_STICKY
     }
 
-    /**
-     * Keeps the link warm.
-     *
-     * A cold connect takes 10-20 s because the ring only advertises periodically, which is long
-     * enough that the first notification after an idle spell misses its buzz entirely. Reconnecting
-     * in the background means the link is already up when a notification actually arrives.
-     */
-    private fun startWatchdog() {
-        if (watchdogJob?.isActive == true) return
-        watchdogJob = scope.launch {
-            while (isActive) {
-                delay(WATCHDOG_INTERVAL_MS)
-                if (settings.ringAddress != null && !client.isConnected &&
-                    !client.backgroundConnectArmed
-                ) {
-                    L.d("watchdog: link is down, reconnecting")
-                    ensureConnected()
-                }
-            }
-        }
-    }
-
     override fun onDestroy() {
         instance = null
-        idleJob?.cancel()
+        idleJobs.values.forEach { it.cancel() }
         watchdogJob?.cancel()
         callMonitor?.stop()
-        client.disconnect()
+        clients.values.forEach { it.disconnect() }
         scope.cancel()
         super.onDestroy()
     }
 
-    // --- connection ------------------------------------------------------------------------------
+    // --- connections ------------------------------------------------------------------------------
 
-    private suspend fun ensureConnected(): Boolean {
+    private fun clientFor(address: String): RingBleClient =
+        clients.getOrPut(address) {
+            RingBleClient(this).apply {
+                onConnectionChange = { up ->
+                    updateRing(address) { it.copy(connected = up) }
+                    if (up) startIdleLoop(address) else idleJobs.remove(address)?.cancel()
+                }
+            }
+        }
+
+    private suspend fun connectAll() {
+        settings.rings.forEach { ring -> ensureConnected(ring.address) }
+    }
+
+    private suspend fun ensureConnected(address: String): Boolean {
+        val client = clientFor(address)
         if (client.isConnected) return true
 
-        val ok = connecting.withLock {
-            // Re-check inside the lock: while we were queued, another caller may have connected.
+        val lock = connectLocks.getOrPut(address) { Mutex() }
+        val ok = lock.withLock {
             if (client.isConnected) return@withLock true
-            val address = settings.ringAddress ?: return@withLock false
-            state.value = state.value.copy(status = "Connecting…")
             L.i("connecting to $address")
             val connected = client.connect(address)
-            L.i("connect -> $connected")
-            state.value = state.value.copy(
-                connected = connected,
-                status = if (connected) "Connected" else "Not connected",
-            )
-            if (connected) startIdleLoop()
+            L.i("connect $address -> $connected")
+            updateRing(address) { it.copy(connected = connected) }
+            if (connected) startIdleLoop(address)
             connected
         }
 
-        // Deliberately OUTSIDE the lock. syncNow() calls ensureConnected() itself, and a Kotlin
-        // Mutex is not reentrant — doing this inside the lock deadlocked the service permanently,
-        // taking every later buzz and sync down with it.
-        if (ok && shouldAutoSync()) scope.launch { syncNow(force = false) }
+        // Outside the lock: syncAll() calls ensureConnected() again and a Mutex is not reentrant.
+        if (ok && shouldAutoSync()) scope.launch { syncAll(force = false) }
         return ok
     }
 
     /**
-     * While not syncing, someone still has to answer the ring: it sends a heartbeat every ~2.5 min
-     * and a descriptor every ~30-60 s. Left unanswered the link goes stale and the frames pile up.
+     * While not syncing, someone has to answer the ring: it sends a heartbeat every ~2.5 min and a
+     * descriptor every ~30-60 s. Left unanswered the link goes stale and frames pile up.
      */
-    private fun startIdleLoop() {
-        idleJob?.cancel()
-        idleJob = scope.launch {
+    private fun startIdleLoop(address: String) {
+        idleJobs.remove(address)?.cancel()
+        val client = clientFor(address)
+        idleJobs[address] = scope.launch {
             while (isActive) {
                 val frame = withTimeoutOrNull(30_000) { client.incoming.receive() } ?: continue
                 if (frame.isEmpty()) continue
                 when (frame[0].toInt() and 0xff) {
                     Opcodes.RESP_HEARTBEAT -> client.write(Opcodes.HEARTBEAT_ACK)
                     Opcodes.RESP_DESCRIPTOR_QUERY, Opcodes.RESP_DESCRIPTOR_FETCH ->
-                        Descriptor.parse(frame)?.let {
-                            repo.onDescriptor(it)
-                            state.value = state.value.copy(battery = it.batteryPercent)
+                        Descriptor.parse(frame)?.let { d ->
+                            repo.sinkFor(address).onDescriptor(d)
+                            updateRing(address) {
+                                it.copy(battery = d.batteryPercent, onCharger = d.onCharger)
+                            }
                         }
+                }
+            }
+        }
+    }
+
+    private fun startWatchdog() {
+        if (watchdogJob?.isActive == true) return
+        watchdogJob = scope.launch {
+            while (isActive) {
+                delay(WATCHDOG_INTERVAL_MS)
+                settings.rings.forEach { ring ->
+                    val client = clientFor(ring.address)
+                    if (!client.isConnected && !client.backgroundConnectArmed) {
+                        L.d("watchdog: ${ring.address} is down, reconnecting")
+                        ensureConnected(ring.address)
+                    }
                 }
             }
         }
@@ -187,63 +182,55 @@ class RingService : Service() {
 
     // --- actions ---------------------------------------------------------------------------------
 
-    /** Buzz the ring. Safe to call at any time; the transport serialises it against a sync. */
     /**
-     * Buzz the ring, de-duplicating per [key] (a notification group or package).
+     * Buzz the ring the user is actually wearing.
      *
-     * The cooldown is stamped only after the ring actually accepts the write. Debouncing on the
-     * attempt instead would let a buzz that never arrived — because the link was down — silence the
-     * next real notification, which is the worst of both worlds.
+     * A ring sitting in its charger should stay silent — buzzing it is both useless and the reason
+     * the spare exists. Rings report charging state in their descriptor, so the worn ones are simply
+     * the connected ones that are not charging; if that leaves nobody, fall back to any connection
+     * rather than dropping the notification.
      */
-    suspend fun buzz(key: String? = null) {
+    suspend fun buzz(key: String?) {
         val requestedAt = System.currentTimeMillis()
         if (key != null && recentlyBuzzed(key, requestedAt)) {
             L.d("buzz skipped: $key buzzed moments ago")
             return
         }
-        if (!ensureConnected()) {
-            L.w("buzz dropped: ring not connected")
-            state.value = state.value.copy(status = "Buzz missed — ring not connected")
+
+        settings.rings.forEach { ring -> ensureConnected(ring.address) }
+
+        val connected = settings.rings.filter { clientFor(it.address).isConnected }
+        if (connected.isEmpty()) {
+            L.w("buzz dropped: no ring connected")
             return
         }
-        // Buzzing long after the notification is worse than not buzzing: the user has already seen
-        // the phone, and a stray pulse minutes later is just confusing.
-        val waited = System.currentTimeMillis() - requestedAt
-        if (waited > STALE_BUZZ_MS) {
-            L.w("buzz dropped: took ${waited}ms to connect, too late to be useful")
+        val worn = connected.filterNot { state.value.ringOrNull(it.address)?.onCharger == true }
+        val targets = worn.ifEmpty { connected }
+
+        if (System.currentTimeMillis() - requestedAt > STALE_BUZZ_MS) {
+            L.w("buzz dropped: connecting took too long to still be useful")
             return
         }
-        val ok = client.writeReliably(Opcodes.VIBRATE)
-        if (ok) {
-            if (key != null) synchronized(lastBuzz) { lastBuzz[key] = System.currentTimeMillis() }
-            L.i("buzz delivered${if (key != null) " ($key)" else ""}")
-        } else {
-            L.w("buzz dropped: ring did not accept the write")
+
+        var delivered = false
+        targets.forEach { ring ->
+            if (clientFor(ring.address).writeReliably(Opcodes.VIBRATE)) {
+                delivered = true
+                L.i("buzz delivered to ${ring.shortName}${if (key != null) " ($key)" else ""}")
+            } else {
+                L.w("buzz dropped: ${ring.shortName} did not accept the write")
+            }
         }
+        if (delivered && key != null) synchronized(lastBuzz) { lastBuzz[key] = System.currentTimeMillis() }
     }
 
     private fun recentlyBuzzed(key: String, now: Long): Boolean = synchronized(lastBuzz) {
         val previous = lastBuzz[key]
         if (previous != null && now - previous < BUZZ_COOLDOWN_MS) return true
-        // Bounded: a phone sees many packages over a long uptime, and this map must not grow with
-        // them. Oldest entry goes when it is full.
         if (lastBuzz.size >= MAX_TRACKED_KEYS) {
             lastBuzz.entries.minByOrNull { it.value }?.let { lastBuzz.remove(it.key) }
         }
         false
-    }
-
-    /** Rewrite every stored record into Health Connect at its current (corrected) timestamp. */
-    private suspend fun reExport() {
-        state.value = state.value.copy(status = "Re-exporting…")
-        // Older builds wrote sleep sessions derived from channel contiguity, which turned out to be
-        // unsound. Clear them out so the correction reaches anyone who already ran that version.
-        if (exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
-        val n = runCatching { exporter.reExportAll(clock) }
-            .onFailure { L.e("re-export failed", it) }
-            .getOrDefault(0)
-        L.i("re-exported $n rows")
-        state.value = state.value.copy(status = "Re-exported $n records")
     }
 
     private fun shouldAutoSync(): Boolean {
@@ -252,51 +239,92 @@ class RingService : Service() {
         return System.currentTimeMillis() - settings.lastSyncAt > MIN_SYNC_INTERVAL_MS
     }
 
-    suspend fun syncNow(force: Boolean) {
+    suspend fun syncAll(force: Boolean) {
         if (!force && !shouldAutoSync()) return
-        if (!ensureConnected()) {
-            L.w("sync aborted: could not reach the ring")
-            state.value = state.value.copy(status = "Sync failed — ring unreachable")
-            return
-        }
-        busy.withLock {
-            // The sync owns the incoming stream while it runs.
-            idleJob?.cancelAndJoin()
+        syncing.withLock {
             state.value = state.value.copy(syncing = true, status = "Syncing…")
+            var total = 0
             try {
-                val session = SyncSession(settings.ringAddress!!, client, repo, clock)
-                L.i("authenticating")
-                if (!session.authenticate()) {
-                    L.e("auth failed")
-                    state.value = state.value.copy(status = "Authentication failed")
-                    return@withLock
+                for (ring in settings.rings) {
+                    if (!ensureConnected(ring.address)) {
+                        L.w("sync skipped for ${ring.shortName}: unreachable")
+                        continue
+                    }
+                    total += syncOne(ring)
                 }
-                L.i("auth ok, draining history")
-                val stats = session.syncHistory()
-                L.i("sync done: epochs=${stats.epochs} pages=${stats.pages} sport=${stats.sportIntervals} newest=${stats.newestCounter} epochAnchor=${clock.epoch()}")
                 settings.epochAnchor = clock.epoch()
                 settings.epochCalibrated = clock.isCalibrated()
                 settings.lastSyncAt = System.currentTimeMillis()
                 state.value = state.value.copy(
-                    status = "Synced ${stats.epochs} records",
+                    status = "Synced $total records",
                     lastSyncAt = settings.lastSyncAt,
                 )
                 if (settings.exportToHealthConnect) {
                     val exported = exporter.exportPending(clock)
                     L.i("health connect export: $exported rows")
-                    if (exported > 0) {
-                        state.value = state.value.copy(status = "Synced ${stats.epochs}, exported $exported")
-                    }
                 }
             } finally {
                 state.value = state.value.copy(syncing = false)
-                delay(200)
-                startIdleLoop()
             }
         }
     }
 
-    // --- foreground notification ------------------------------------------------------------------
+    private suspend fun syncOne(ring: Ring): Int {
+        val client = clientFor(ring.address)
+        val job = idleJobs.remove(ring.address)
+        job?.cancelAndJoin()
+        return try {
+            val session = SyncSession(ring.address, client, repo.sinkFor(ring.address), clock)
+            if (!session.authenticate()) {
+                L.e("auth failed for ${ring.shortName}")
+                return 0
+            }
+            val stats = session.syncHistory()
+            L.i("${ring.shortName}: ${stats.epochs} epochs, ${stats.pages} pages")
+            stats.epochs
+        } finally {
+            delay(200)
+            startIdleLoop(ring.address)
+        }
+    }
+
+    private suspend fun reExport() {
+        state.value = state.value.copy(status = "Re-exporting…")
+        if (exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
+        val n = runCatching { exporter.reExportAll(clock) }
+            .onFailure { L.e("re-export failed", it) }
+            .getOrDefault(0)
+        L.i("re-exported $n rows")
+        state.value = state.value.copy(status = "Re-exported $n records")
+    }
+
+    // --- state ------------------------------------------------------------------------------------
+
+    /**
+     * Rebuild the published ring list.
+     *
+     * Connection flags start false: the state flow is static and outlives the service, so carrying
+     * the old values over would show a ring as connected when the process has just restarted and
+     * holds no link at all.
+     */
+    private fun publishRings() {
+        state.value = state.value.copy(
+            rings = settings.rings.map { r ->
+                val known = state.value.ringOrNull(r.address)
+                RingState(r.address, r.name, connected = false, battery = known?.battery)
+            },
+        )
+    }
+
+    private fun updateRing(address: String, transform: (RingState) -> RingState) {
+        val current = state.value.rings
+        val existing = current.firstOrNull { it.address == address }
+            ?: RingState(address, settings.rings.firstOrNull { it.address == address }?.name ?: address)
+        state.value = state.value.copy(
+            rings = (current.filterNot { it.address == address } + transform(existing))
+                .sortedBy { it.address },
+        )
+    }
 
     private fun startForegroundNotification() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -308,7 +336,7 @@ class RingService : Service() {
         }
         val notification: Notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("RingLink")
-            .setContentText("Keeping your ring connected")
+            .setContentText("Keeping your rings connected")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
             .build()
@@ -319,19 +347,32 @@ class RingService : Service() {
         }
     }
 
-    data class State(
+    data class RingState(
+        val address: String,
+        val name: String,
         val connected: Boolean = false,
-        val syncing: Boolean = false,
         val battery: Int? = null,
+        val onCharger: Boolean = false,
+    ) {
+        val shortName: String get() = name.substringAfterLast('-', name)
+    }
+
+    data class State(
+        val rings: List<RingState> = emptyList(),
+        val syncing: Boolean = false,
         val status: String = "Idle",
         val lastSyncAt: Long = 0,
-    )
+    ) {
+        fun ringOrNull(address: String) = rings.firstOrNull { it.address == address }
+    }
 
     companion object {
         const val ACTION_SYNC = "io.github.ringlink.SYNC"
         const val ACTION_BUZZ = "io.github.ringlink.BUZZ"
         const val ACTION_STOP = "io.github.ringlink.STOP"
         const val ACTION_REEXPORT = "io.github.ringlink.REEXPORT"
+        const val EXTRA_KEY = "key"
+
         private const val CHANNEL_ID = "ring_link"
         private const val NOTIFICATION_ID = 1
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
@@ -340,20 +381,10 @@ class RingService : Service() {
         private const val BUZZ_COOLDOWN_MS = 3_000L
         private const val MAX_TRACKED_KEYS = 64
 
-        const val EXTRA_KEY = "key"
-
-        /**
-         * The running instance, if any.
-         *
-         * Android 12+ forbids starting a foreground service from the background, so the periodic
-         * sync worker cannot spin this up on its own — it reaches the already-running service
-         * through here instead, and simply retries later if the service is not up.
-         */
         @Volatile
         var instance: RingService? = null
             private set
 
-        /** Simple shared state so the UI can observe the service without binding. */
         val state = MutableStateFlow(State())
         val observable: StateFlow<State> get() = state
 
@@ -362,7 +393,6 @@ class RingService : Service() {
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }
 
-        /** Ask for a buzz on behalf of one notification group. */
         fun buzzFor(context: Context, key: String) {
             val i = Intent(context, RingService::class.java).apply {
                 action = ACTION_BUZZ

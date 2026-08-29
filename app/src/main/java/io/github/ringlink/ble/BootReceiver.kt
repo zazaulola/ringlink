@@ -14,7 +14,7 @@ import io.github.ringlink.data.Settings
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        if (Settings(context).ringAddress == null) return
+        if (Settings(context).rings.isEmpty()) return
         RingService.start(context)
     }
 }

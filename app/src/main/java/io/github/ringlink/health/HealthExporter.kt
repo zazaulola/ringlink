@@ -61,11 +61,7 @@ class HealthExporter(
         if (records.isNotEmpty()) writer.insert(records)
 
         // Only mark exported once the insert has returned — a failure leaves the rows pending.
-        repo.markExported(
-            epochs = epochs.map { it.counter },
-            sport = emptyList(),
-            states = states.map { it.recordedAt },
-        )
+        repo.markExported(epochs = epochs, sport = emptyList(), states = states)
         return epochs.size + states.size
     }
 
