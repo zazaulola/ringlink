@@ -229,6 +229,7 @@ private fun RingRow(
             val charge = battery?.let { "$it%" } ?: "—"
             val where = when {
                 !connected -> "disconnected"
+                battery == null -> "connected"
                 onCharger -> "charging (will not buzz)"
                 else -> "worn"
             }

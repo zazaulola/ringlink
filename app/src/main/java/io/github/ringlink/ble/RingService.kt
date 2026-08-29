@@ -61,6 +61,7 @@ class RingService : Service() {
     private val syncing = Mutex()
     private var watchdogJob: Job? = null
     private var callMonitor: CallMonitor? = null
+    private var notificationStarted = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -332,6 +333,7 @@ class RingService : Service() {
                 RingState(r.address, r.name, connected = false, battery = known?.battery)
             },
         )
+        updateNotification()
     }
 
     private fun updateRing(address: String, transform: (RingState) -> RingState) {
@@ -342,6 +344,7 @@ class RingService : Service() {
             rings = (current.filterNot { it.address == address } + transform(existing))
                 .sortedBy { it.address },
         )
+        updateNotification()
     }
 
     private fun startForegroundNotification() {
@@ -352,17 +355,62 @@ class RingService : Service() {
                     .apply { setShowBadge(false) },
             )
         }
-        val notification: Notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("RingLink")
-            .setContentText("Keeping your rings connected")
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
+    }
+
+    /**
+     * Keep the ongoing notification honest about what is actually reachable.
+     *
+     * This notification has to exist anyway — a foreground service requires one — so it may as well
+     * be the status display. A ring that has quietly dropped off is otherwise invisible until a
+     * notification fails to reach it, which is exactly the wrong moment to find out.
+     */
+    private fun updateNotification() {
+        if (!notificationStarted) return
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        runCatching { nm.notify(NOTIFICATION_ID, buildNotification()) }
+    }
+
+    private fun buildNotification(): Notification {
+        notificationStarted = true
+        val rings = state.value.rings
+        val unreachable = rings.filter { !it.connected }
+
+        val title = when {
+            rings.isEmpty() -> "No ring configured"
+            unreachable.isEmpty() -> "Rings connected"
+            unreachable.size == rings.size -> "Ring unreachable"
+            else -> "${unreachable.joinToString(", ") { it.shortName }} unreachable"
+        }
+
+        val detail = rings.joinToString(" · ") { ring ->
+            val charge = ring.battery?.let { "$it%" }
+            // Charging state only becomes known once the ring sends a descriptor, so until then
+            // say nothing about it rather than asserting "worn" on no evidence.
+            val where = when {
+                !ring.connected -> "offline"
+                ring.battery == null -> "connected"
+                ring.onCharger -> "charging"
+                else -> "worn"
+            }
+            listOfNotNull(ring.shortName, charge, where).joinToString(" ")
+        }
+
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(detail.ifEmpty { "Open RingLink to add a ring" })
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
     }
 
     data class RingState(
