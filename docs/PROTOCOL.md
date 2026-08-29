@@ -123,10 +123,19 @@ Sleep stages, stress/readiness scores and the nightly respiratory summary are **
 vendor app**, not transmitted. Skin temperature appears only in the live descriptor, never in the
 bulk history.
 
-**The ring stops recording when it is off the finger.** Measured: 8.6 minutes with the ring off the
-hand produced zero new epochs, and a whole 43-hour dataset contains exactly one IDLE record. So "the
-newest record is hours old" means the ring was in a drawer, not that its clock is wrong — which is
-why clock calibration here is bootstrap-only and never re-anchors on stale-looking data.
+**Open: a measured 4-hour discontinuity.** Over three days of continuous wear (the ring never came
+off) the counter sequence contains a 14552-second break, which decomposes exactly as 14400 s (4 h)
+plus one ordinary 152 s epoch. Independently, between two syncs 42.798 h apart the counter advanced
+only 38.796 h — a 4.002 h deficit the same event accounts for to within seconds. Records either side
+of it need anchors 4 hours apart, which is exactly the gap between the two "rival" epoch constants:
+both are right, for their own side of the break.
+
+What is *not* established is the mechanism, and therefore the correction. A ring that stopped
+recording for four hours explains the break in counters but not the deficit; a ring whose clock
+froze for four hours explains the deficit but not the break. Until one of those is confirmed, no
+automatic compensation is applied — shifting health data by four hours on an unproven sign would be
+worse than leaving a known, documented seam. Counters are stored raw, so a correction can be applied
+retroactively once the mechanism is known.
 
 **Nor is sleep itself.** Channel `0x00` is conventionally called the "sleep" channel, but the ring
 streams it continuously: across 43 hours of measured data its epochs are contiguous day and night,

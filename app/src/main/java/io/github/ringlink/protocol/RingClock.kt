@@ -33,15 +33,14 @@ class RingClock(
      */
     fun calibrate(newestCounter: Long, nowUnixSeconds: Long): Boolean {
         if (newestCounter <= 0) return false
-        // Bootstrap only, and never again.
+        // Bootstrap only. A shifted anchor makes a wrongly-dated record look like "now", so a
+        // re-anchoring can always justify itself — repeated calibration is a mechanism for drift
+        // rather than accuracy.
         //
-        // The tempting rule — "records look persistently stale, so the ring's base must have
-        // shifted" — is unsound, because the ring stops recording entirely when it is off the
-        // finger. Measured: 8.6 minutes with the ring off produced zero new epochs. So "stale
-        // records" is the normal signature of a ring in a drawer, and re-anchoring on it would
-        // silently re-date the entire archive every time the user takes the ring off for an
-        // afternoon. Shifting the other way is worse still: a record from the future is impossible,
-        // so that can only ever be a mis-parse.
+        // Note that the ring's own timeline is not perfectly uniform: see docs/PROTOCOL.md for a
+        // measured 4-hour discontinuity that no single anchor can absorb. Counters are stored raw
+        // precisely so that a future, properly grounded correction can re-date the archive without
+        // any data having been lost to a guess made today.
         if (calibrated) return false
         calibrated = true
         val residual = nowUnixSeconds - newestCounter
