@@ -227,15 +227,15 @@ class RingClockTest {
     }
 
     /**
-     * A whole-hour base shift must be recoverable. Observed for real: the anchor was settled on the
-     * earlier constant, then every record started arriving four hours stale, which is the shape of
-     * the ring's own clock having been re-set.
+     * Stale-looking records must NOT re-anchor a settled clock. The ring stops recording when it is
+     * off the finger, so "the newest record is hours old" is the ordinary signature of a ring left
+     * in a drawer — re-dating the archive for it would corrupt every stored timestamp.
      */
-    @Test fun `records arriving persistently stale re-open a settled anchor`() {
-        val clock = RingClock(RingClock.ALTERNATE_EPOCH, calibrated = true)
+    @Test fun `stale records never re-open a settled anchor`() {
+        val clock = RingClock(RingClock.DEFAULT_EPOCH, calibrated = true)
         val now = 1_787_949_032L
-        val newest = now - 4 * 3600L - RingClock.ALTERNATE_EPOCH
-        assertTrue(clock.calibrate(newest, now))
+        val newest = now - 6 * 3600L - RingClock.DEFAULT_EPOCH
+        assertFalse(clock.calibrate(newest, now))
         assertEquals(RingClock.DEFAULT_EPOCH, clock.epoch())
     }
 

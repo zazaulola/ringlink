@@ -123,6 +123,11 @@ Sleep stages, stress/readiness scores and the nightly respiratory summary are **
 vendor app**, not transmitted. Skin temperature appears only in the live descriptor, never in the
 bulk history.
 
+**The ring stops recording when it is off the finger.** Measured: 8.6 minutes with the ring off the
+hand produced zero new epochs, and a whole 43-hour dataset contains exactly one IDLE record. So "the
+newest record is hours old" means the ring was in a drawer, not that its clock is wrong — which is
+why clock calibration here is bootstrap-only and never re-anchors on stale-looking data.
+
 **Nor is sleep itself.** Channel `0x00` is conventionally called the "sleep" channel, but the ring
 streams it continuously: across 43 hours of measured data its epochs are contiguous day and night,
 and the SpO2-bearing ones are spread evenly over all 24 hours. Contiguity on that channel therefore

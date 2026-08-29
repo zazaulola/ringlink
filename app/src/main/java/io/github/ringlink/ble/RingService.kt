@@ -130,21 +130,30 @@ class RingService : Service() {
 
     // --- connection ------------------------------------------------------------------------------
 
-    private suspend fun ensureConnected(): Boolean = connecting.withLock {
-        // Re-check inside the lock: while we were queued, another caller may have connected.
-        if (client.isConnected) return@withLock true
-        val address = settings.ringAddress ?: return@withLock false
-        state.value = state.value.copy(status = "Connecting…")
-        L.i("connecting to $address")
-        val ok = client.connect(address)
-        L.i("connect -> $ok")
-        state.value = state.value.copy(connected = ok, status = if (ok) "Connected" else "Not connected")
-        if (ok) {
-            startIdleLoop()
-            // A stale ring is worth draining as soon as it shows up, but never mid-night.
-            if (shouldAutoSync()) syncNow(force = false)
+    private suspend fun ensureConnected(): Boolean {
+        if (client.isConnected) return true
+
+        val ok = connecting.withLock {
+            // Re-check inside the lock: while we were queued, another caller may have connected.
+            if (client.isConnected) return@withLock true
+            val address = settings.ringAddress ?: return@withLock false
+            state.value = state.value.copy(status = "Connecting…")
+            L.i("connecting to $address")
+            val connected = client.connect(address)
+            L.i("connect -> $connected")
+            state.value = state.value.copy(
+                connected = connected,
+                status = if (connected) "Connected" else "Not connected",
+            )
+            if (connected) startIdleLoop()
+            connected
         }
-        return@withLock ok
+
+        // Deliberately OUTSIDE the lock. syncNow() calls ensureConnected() itself, and a Kotlin
+        // Mutex is not reentrant — doing this inside the lock deadlocked the service permanently,
+        // taking every later buzz and sync down with it.
+        if (ok && shouldAutoSync()) scope.launch { syncNow(force = false) }
+        return ok
     }
 
     /**

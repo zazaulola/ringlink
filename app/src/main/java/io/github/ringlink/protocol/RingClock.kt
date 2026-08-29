@@ -33,23 +33,19 @@ class RingClock(
      */
     fun calibrate(newestCounter: Long, nowUnixSeconds: Long): Boolean {
         if (newestCounter <= 0) return false
-        val residual = nowUnixSeconds - newestCounter
-        val errorHours = (residual - epochSeconds) / 3600.0
-        // Two competing failure modes. Re-anchoring on every sync is a drift mechanism, because a
-        // shifted anchor makes a wrongly-dated record look like "now" and so always justifies
-        // itself. But the ring's base is not immutable either: it has been observed to jump by a
-        // whole 4 hours, apparently when the vendor app sets the ring's clock. So: settle it once,
-        // then only revisit it when the disagreement is far too large to be drift or a stale record.
-        if (calibrated) {
-            // Only ever move the anchor FORWARD once it is settled. The two situations look alike
-            // arithmetically but not physically: a record that appears stale can be genuine (the
-            // ring's base really has been seen to jump), while a record that appears to come from
-            // the future cannot be — that is a mis-parse, and "correcting" for it would drag every
-            // stored timestamp along with it.
-            if (errorHours < RECALIBRATE_HOURS) return false
-        }
+        // Bootstrap only, and never again.
+        //
+        // The tempting rule — "records look persistently stale, so the ring's base must have
+        // shifted" — is unsound, because the ring stops recording entirely when it is off the
+        // finger. Measured: 8.6 minutes with the ring off produced zero new epochs. So "stale
+        // records" is the normal signature of a ring in a drawer, and re-anchoring on it would
+        // silently re-date the entire archive every time the user takes the ring off for an
+        // afternoon. Shifting the other way is worse still: a record from the future is impossible,
+        // so that can only ever be a mis-parse.
+        if (calibrated) return false
         calibrated = true
-        val hours = Math.round(errorHours)
+        val residual = nowUnixSeconds - newestCounter
+        val hours = Math.round((residual - epochSeconds) / 3600.0)
         if (hours == 0L) return false
         val candidate = epochSeconds + hours * 3600L
         if (candidate !in MIN_EPOCH..MAX_EPOCH) return false
@@ -81,9 +77,6 @@ class RingClock(
 
         /** The other constant in circulation, 4 h earlier. See the class comment. */
         const val ALTERNATE_EPOCH = 1_577_793_600L
-
-        /** Only a disagreement this large re-opens a settled anchor. */
-        private const val RECALIBRATE_HOURS = 2.0
 
         /** Accept only anchors within a day of the documented candidates. */
         private const val MIN_EPOCH = DEFAULT_EPOCH - 86_400L
