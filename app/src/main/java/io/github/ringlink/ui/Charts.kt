@@ -85,12 +85,29 @@ fun Sparkline(
     }
 }
 
+/**
+ * Collapse a burst-sampled series into one point per bucket, using the median.
+ *
+ * Live-descriptor readings arrive in clusters whenever the phone is connected, which drawn raw look
+ * like a picket fence rather than a trend. A median per hour is both readable and robust: a single
+ * reading taken as the ring came off the finger cannot drag the hour with it.
+ */
+fun List<Point>.bucketed(bucketSeconds: Long = 3600): List<Point> =
+    groupBy { it.timeSeconds / bucketSeconds }
+        .toSortedMap()
+        .map { (bucket, points) ->
+            val values = points.map { it.value }.sorted()
+            Point(bucket * bucketSeconds, values[values.size / 2])
+        }
+
 /** Chart colours kept together so the screens stay visually consistent. */
 object ChartColors {
     val heartRate = Color(0xFFD32F2F)
     val spo2 = Color(0xFF1976D2)
     val hrv = Color(0xFF7B1FA2)
     val respiratory = Color(0xFF00796B)
+    val temperature = Color(0xFFE65100)
+    val battery = Color(0xFF455A64)
 }
 
 internal fun clampWindow(value: Long, lo: Long, hi: Long) = min(max(value, lo), hi)

@@ -157,7 +157,11 @@ class RingService : Service() {
                         Descriptor.parse(frame)?.let { d ->
                             repo.sinkFor(address).onDescriptor(d)
                             updateRing(address) {
-                                it.copy(battery = d.batteryPercent, onCharger = d.onCharger)
+                                it.copy(
+                                    battery = d.batteryPercent,
+                                    onCharger = d.onCharger,
+                                    skinTemp = d.skinTempA,
+                                )
                             }
                         }
                 }
@@ -420,6 +424,7 @@ class RingService : Service() {
         val connected: Boolean = false,
         val battery: Int? = null,
         val onCharger: Boolean = false,
+        val skinTemp: Double? = null,
     ) {
         val shortName: String get() = name.substringAfterLast('-', name)
         val canVibrate: Boolean get() = Ring(address, name).canVibrate

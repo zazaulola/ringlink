@@ -75,6 +75,10 @@ interface RingDao {
     @Query("SELECT * FROM device_state WHERE ringId = :ringId AND recordedAt >= :since ORDER BY recordedAt")
     suspend fun deviceStatesSince(ringId: String, since: Long): List<DeviceStateEntity>
 
+    /** Live-descriptor history for the charts: temperature, battery and steps. */
+    @Query("SELECT * FROM device_state WHERE recordedAt >= :since ORDER BY recordedAt")
+    fun deviceStatesSinceFlow(since: Long): Flow<List<DeviceStateEntity>>
+
     @Query(
         """
         SELECT MIN(counter) AS firstCounter,

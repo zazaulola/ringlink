@@ -14,11 +14,17 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.remember
+import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
     val rows by vm.history.collectAsState()
+    val states by vm.deviceStates.collectAsState()
     val summary by vm.summary.collectAsState()
     val window by vm.selectedWindow.collectAsState()
 
@@ -93,12 +99,66 @@ fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
             }
         }
 
+        if (states.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Skin temperature", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Shown per day rather than as a trend line: these readings only arrive " +
+                            "while the phone is connected to the ring, and drawing a line through " +
+                            "clusters hours apart would invent a shape the data does not have.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    DailyTemperature(states)
+                    Text(
+                        "Lows near room temperature are the ring off the finger — skin temperature " +
+                            "only means something while it is worn.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
         Text(
-            "Charts show only measured samples — gaps are real gaps, when the ring was off, " +
-                "charging or out of range.",
+            "Heart rate and its companions come from the ring's stored history, so they cover the " +
+                "whole period. Temperature and battery arrive only while the phone is connected, " +
+                "so those traces are sparser. Gaps are real gaps.",
             style = MaterialTheme.typography.bodySmall,
         )
     }
+}
+
+/**
+ * Per-day skin temperature: the range, and a median that a single off-finger reading cannot skew.
+ *
+ * A table rather than a chart because the underlying sampling is clustered, not continuous — this
+ * is the honest shape of the data, and it is the shape you actually watch a temperature in.
+ */
+@Composable
+private fun DailyTemperature(states: List<DeviceStateEntity>) {
+    val worn = states.filter { it.skinTempA in 20.0..42.0 }
+    if (worn.isEmpty()) {
+        Text("No temperature readings in this window.", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    val format = remember { SimpleDateFormat("EEE d MMM", Locale.getDefault()) }
+    worn.groupBy { format.format(Date(it.recordedAt)) }
+        .entries
+        .sortedByDescending { it.value.first().recordedAt }
+        .forEach { (day, rows) ->
+            val values = rows.map { it.skinTempA }.sorted()
+            val median = values[values.size / 2]
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(day, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "%.1f–%.1f °C · median %.1f".format(values.first(), values.last(), median),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
 }
 
 /** Project stored rows onto a chart series, dropping epochs where the field was not measured. */

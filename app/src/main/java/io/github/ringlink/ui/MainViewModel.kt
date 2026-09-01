@@ -15,6 +15,7 @@ import io.github.ringlink.data.Ring
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
+import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.Summary
 import io.github.ringlink.health.HealthExporter
@@ -77,6 +78,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     @OptIn(ExperimentalCoroutinesApi::class)
     val history: StateFlow<List<EpochEntity>> = window
         .flatMapLatest { repo.epochsSince(cursorFor(it)) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Live-descriptor history. Unlike epochs these carry phone wall-clock times, so they need no
+     * ring-clock conversion — and they exist only while the phone was connected, which is why the
+     * temperature trace has gaps that the heart-rate one does not.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val deviceStates: StateFlow<List<DeviceStateEntity>> = window
+        .flatMapLatest { repo.deviceStatesSinceFlow(System.currentTimeMillis() - it.seconds * 1000) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
