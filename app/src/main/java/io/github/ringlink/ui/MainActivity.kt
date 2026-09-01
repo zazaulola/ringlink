@@ -200,6 +200,30 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                 }
             }
 
+            SectionCard("Watch") {
+                ToggleRow("Periodic check-in", ui.watchEnabled, vm::setWatchEnabled)
+                Text(
+                    "Asks you to confirm you are alright at intervals, with an alarm that sounds " +
+                        "through silent mode and buzzes the ring. An unanswered check-in escalates " +
+                        "and keeps asking — silence is the signal, since an illness that clouds " +
+                        "judgement is exactly when you would not raise the alarm yourself.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                ui.daysSinceExposure?.let { Text("Day $it since the recorded exposure.") }
+                if (ui.checkInPending) {
+                    Button(onClick = { vm.acknowledgeCheckIn() }, Modifier.fillMaxWidth()) {
+                        Text("I am alright")
+                    }
+                }
+                OutlinedButton(onClick = { vm.testAlarm() }, Modifier.fillMaxWidth()) {
+                    Text("Test the alarm now")
+                }
+                Text(
+                    "This is a prompt, not a safety net: it cannot call anyone for you.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
             SectionCard("Permissions") {
                 Button(onClick = { runtimePermissions.launch(requiredPermissions()) }, Modifier.fillMaxWidth()) {
                     Text("Grant Bluetooth, phone and notification permissions")

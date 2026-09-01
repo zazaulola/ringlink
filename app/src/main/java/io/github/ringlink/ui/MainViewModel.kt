@@ -19,6 +19,9 @@ import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.Summary
 import io.github.ringlink.health.HealthExporter
+import io.github.ringlink.watch.AlarmNotifier
+import io.github.ringlink.watch.CheckIn
+import io.github.ringlink.watch.WatchSettings
 import io.github.ringlink.protocol.RingClock
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -55,11 +58,16 @@ data class UiState(
     val buzzOnCalls: Boolean = true,
     val exportToHealthConnect: Boolean = true,
     val estimateSleep: Boolean = true,
+    val watchEnabled: Boolean = false,
+    val daysSinceExposure: Long? = null,
+    val checkInPending: Boolean = false,
+    val lastCheckIn: Long = 0,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val settings = Settings(app)
+    private val watch = WatchSettings(app)
     private val repo = RingRepository(RingDatabase.get(app).dao())
     val exporter = HealthExporter(app, repo, settings)
 
@@ -125,6 +133,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 buzzOnCalls = settings.buzzOnCalls,
                 exportToHealthConnect = settings.exportToHealthConnect,
                 estimateSleep = settings.estimateSleep,
+                watchEnabled = watch.enabled,
+                daysSinceExposure = watch.daysSinceExposure,
+                checkInPending = watch.pendingSince != 0L,
+                lastCheckIn = watch.lastCheckInAt,
             )
         }
     }
@@ -203,6 +215,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setBuzzOnCalls(on: Boolean) {
         settings.buzzOnCalls = on
         _ui.value = _ui.value.copy(buzzOnCalls = on)
+    }
+
+    fun setWatchEnabled(on: Boolean) {
+        watch.enabled = on
+        if (on) {
+            if (watch.exposureAt == 0L) watch.exposureAt = System.currentTimeMillis()
+            watch.lastCheckInAt = System.currentTimeMillis()
+            CheckIn.schedule(getApplication())
+        } else {
+            CheckIn.cancel(getApplication())
+        }
+        refresh()
+    }
+
+    fun acknowledgeCheckIn() {
+        CheckIn.acknowledge(getApplication())
+        refresh()
+    }
+
+    /** Fire a check-in right now, so the alarm path can be proven before it is relied on. */
+    fun testAlarm() {
+        AlarmNotifier(getApplication()).raise(
+            title = "Test alarm",
+            body = "This is what a real alert will look and sound like.",
+        )
+        RingService.start(getApplication(), RingService.ACTION_BUZZ)
     }
 
     fun setEstimateSleep(on: Boolean) {

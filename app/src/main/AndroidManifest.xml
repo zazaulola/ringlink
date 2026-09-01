@@ -23,6 +23,13 @@
     <!-- Incoming-call detection. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
+    <!-- A health alarm has to reach the user even on a silenced phone. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <!-- Health Connect: writes only. Background writes need no extra permission. -->
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE_VARIABILITY" />
@@ -84,6 +91,10 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <receiver
+            android:name=".watch.CheckInReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".ble.BootReceiver"
