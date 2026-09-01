@@ -2,6 +2,7 @@ package io.github.ringlink.health
 
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.HeartRateRecord
@@ -9,11 +10,14 @@ import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RespiratoryRateRecord
+import androidx.health.connect.client.records.SkinTemperatureRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Percentage
+import androidx.health.connect.client.units.Temperature
+import androidx.health.connect.client.units.TemperatureDelta
 import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.protocol.RingClock
@@ -43,7 +47,19 @@ class HealthConnectWriter(private val context: Context) {
         HealthPermission.getWritePermission(RespiratoryRateRecord::class),
         HealthPermission.getWritePermission(SleepSessionRecord::class),
         HealthPermission.getWritePermission(StepsRecord::class),
+        HealthPermission.getWritePermission(SkinTemperatureRecord::class),
     )
+
+    /**
+     * Skin temperature is behind a feature flag, so its availability has to be checked rather than
+     * assumed. It is also the only honest home for this reading: the ring measures the surface of a
+     * finger, and filing that as body temperature would misreport a 35 °C skin reading as a
+     * dangerously low core temperature.
+     */
+    fun skinTemperatureSupported(): Boolean = runCatching {
+        client().features.getFeatureStatus(HealthConnectFeatures.FEATURE_SKIN_TEMPERATURE) ==
+            HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
+    }.getOrDefault(false)
 
     fun availability(): Int = HealthConnectClient.getSdkStatus(context)
 
@@ -156,20 +172,60 @@ class HealthConnectWriter(private val context: Context) {
     }
 
     /**
+     * Skin temperature, expressed the way Health Connect wants it: a baseline plus deltas.
+     *
+     * The baseline is the wearer's own median rather than a constant — skin temperature depends on
+     * room, blanket and circulation, so only the deviation from a personal norm carries meaning.
+     */
+    fun mapSkinTemperature(
+        rows: List<DeviceStateEntity>,
+        baselineCelsius: Double,
+    ): List<Record> {
+        if (rows.size < 2) return emptyList()
+        return rows.chunked(TEMPERATURE_CHUNK).mapNotNull { group ->
+            val ordered = group.sortedBy { it.recordedAt }
+            val start = Instant.ofEpochMilli(ordered.first().recordedAt)
+            val end = Instant.ofEpochMilli(ordered.last().recordedAt)
+            if (!end.isAfter(start)) return@mapNotNull null
+            SkinTemperatureRecord(
+                startTime = start,
+                startZoneOffset = zoneFor(start),
+                endTime = end,
+                endZoneOffset = zoneFor(end),
+                metadata = meta("skintemp-${ordered.first().ringId}-${ordered.first().recordedAt}"),
+                deltas = ordered.map {
+                    SkinTemperatureRecord.Delta(
+                        time = Instant.ofEpochMilli(it.recordedAt),
+                        delta = TemperatureDelta.celsius(it.skinTempA - baselineCelsius),
+                    )
+                },
+                baseline = Temperature.celsius(baselineCelsius),
+                measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_FINGER,
+            )
+        }
+    }
+
+    /**
      * A sleep session covering a run of sleep-channel epochs.
      *
      * No stages are attached on purpose: the ring never transmits a hypnogram — the vendor app
      * computes stages itself — so claiming Light/Deep/REM here would be inventing data.
      */
-    fun sleepSession(startCounter: Long, endCounter: Long, clock: RingClock): SleepSessionRecord {
+    fun sleepSession(
+        ringId: String,
+        startCounter: Long,
+        endCounter: Long,
+        clock: RingClock,
+    ): SleepSessionRecord {
         val start = Instant.ofEpochSecond(clock.toUnixSeconds(startCounter))
-        val end = Instant.ofEpochSecond(clock.toUnixSeconds(endCounter) + EPOCH_SECONDS)
+        val end = Instant.ofEpochSecond(clock.toUnixSeconds(endCounter))
         return SleepSessionRecord(
             startTime = start,
             startZoneOffset = zoneFor(start),
             endTime = end,
             endZoneOffset = zoneFor(end),
-            metadata = meta("sleep-$startCounter"),
+            title = "Estimated from movement and heart rate",
+            metadata = meta("sleep-$ringId-$startCounter"),
         )
     }
 
@@ -193,6 +249,7 @@ class HealthConnectWriter(private val context: Context) {
 
     private companion object {
         const val CHUNK = 500
+        const val TEMPERATURE_CHUNK = 120
         const val EPOCH_SECONDS = 150L
     }
 }

@@ -137,6 +137,10 @@ automatic compensation is applied — shifting health data by four hours on an u
 worse than leaving a known, documented seam. Counters are stored raw, so a correction can be applied
 retroactively once the mechanism is known.
 
+**Skin temperature is live-only.** It appears in the `0x10`/`0x87` descriptor at `[6:8]` and
+`[8:10]` in 0.1 °C, streamed while connected, and never in the bulk history — so it exists only for
+periods the phone was actually connected to the ring.
+
 **Nor is sleep itself.** Channel `0x00` is conventionally called the "sleep" channel, but the ring
 streams it continuously: across 43 hours of measured data its epochs are contiguous day and night,
 and the SpO2-bearing ones are spread evenly over all 24 hours. Contiguity on that channel therefore

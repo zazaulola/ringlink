@@ -2,6 +2,7 @@ package io.github.ringlink.health
 
 import android.content.Context
 import androidx.health.connect.client.records.Record
+import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
@@ -57,6 +58,7 @@ class HealthExporter(
         val records = ArrayList<Record>()
         records += writer.mapEpochs(epochs, clock)
         records += writer.mapSteps(states)
+        records += temperatureRecords(states)
 
         if (records.isNotEmpty()) writer.insert(records)
 
@@ -66,7 +68,50 @@ class HealthExporter(
     }
 
     /**
-     * Sleep sessions are deliberately NOT exported.
+     * Skin temperature, grouped per ring so each gets its own personal baseline.
+     *
+     * Health Connect stores this as a deviation from a baseline rather than an absolute, which
+     * suits the measurement: a finger's surface temperature says little on its own and a lot when
+     * compared against the same finger's norm.
+     */
+    private fun temperatureRecords(states: List<DeviceStateEntity>): List<Record> {
+        if (!writer.skinTemperatureSupported()) return emptyList()
+        return states.groupBy { it.ringId }.flatMap { (_, rows) ->
+            val usable = rows.filter { it.skinTempA in PLAUSIBLE_SKIN_TEMP }
+            if (usable.size < 2) return@flatMap emptyList()
+            val baseline = usable.map { it.skinTempA }.sorted()[usable.size / 2]
+            writer.mapSkinTemperature(usable, baseline)
+        }
+    }
+
+    /**
+     * Write an estimate of when the wearer slept.
+     *
+     * Run over a window rather than the export batch, because deciding whether a given minute was
+     * sleep needs the surrounding day for context. Sessions carry a deterministic id, so re-running
+     * refines an estimate in place instead of stacking duplicates.
+     */
+    suspend fun exportSleep(clock: RingClock): Int {
+        if (!settings.estimateSleep || !hasPermissions()) return 0
+        val since = clock.cursorForNow(System.currentTimeMillis() / 1000) - SLEEP_WINDOW_SECONDS
+        var written = 0
+        for (ringId in repo.knownRings()) {
+            val epochs = repo.epochsForRingSince(ringId, since)
+            val periods = SleepDetector.detect(
+                epochs.map { SleepInput(it.counter, it.heartRate, it.motionSum) },
+            )
+            if (periods.isEmpty()) continue
+            val records = periods.map {
+                writer.sleepSession(ringId, it.startCounter, it.endCounter, clock)
+            }
+            writer.insert(records)
+            written += records.size
+        }
+        return written
+    }
+
+    /**
+     * Sleep STAGES are deliberately NOT exported.
      *
      * The obvious-looking derivation — treat a contiguous run on the ring's "sleep" channel (0x00)
      * as a night — is wrong. Measured over 43 hours of real data, the ring streams that channel
@@ -87,6 +132,9 @@ class HealthExporter(
 
     private companion object {
         const val BATCH = 500
+        /** Anything outside this is not a finger. */
+        val PLAUSIBLE_SKIN_TEMP = 20.0..42.0
+        const val SLEEP_WINDOW_SECONDS = 7 * 24 * 3600L
         /** Two missing epochs still counts as the same night. */
         const val MAX_GAP_SECONDS = 450L
         const val MIN_SESSION_SECONDS = 30 * 60L

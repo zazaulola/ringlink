@@ -53,6 +53,7 @@ data class UiState(
     val buzzOnNotifications: Boolean = true,
     val buzzOnCalls: Boolean = true,
     val exportToHealthConnect: Boolean = true,
+    val estimateSleep: Boolean = true,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -112,6 +113,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 buzzOnNotifications = settings.buzzOnNotifications,
                 buzzOnCalls = settings.buzzOnCalls,
                 exportToHealthConnect = settings.exportToHealthConnect,
+                estimateSleep = settings.estimateSleep,
             )
         }
     }
@@ -190,6 +192,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setBuzzOnCalls(on: Boolean) {
         settings.buzzOnCalls = on
         _ui.value = _ui.value.copy(buzzOnCalls = on)
+    }
+
+    fun setEstimateSleep(on: Boolean) {
+        settings.estimateSleep = on
+        _ui.value = _ui.value.copy(estimateSleep = on)
     }
 
     fun setExport(on: Boolean) {

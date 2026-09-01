@@ -26,6 +26,8 @@ something the vendor app deliberately does not do, since it restricts haptics to
 |---|---|
 | **Syncs history** | Heart rate, HRV (RMSSD), SpO₂, respiratory rate and motion, per 2.5-minute epoch, from both the sleep and all-day channels |
 | **Live device state** | Battery, step count and two skin-temperature channels, streamed while connected |
+| **Skin temperature** | Written to Health Connect as a deviation from your own baseline, measured at the finger |
+| **Estimated sleep** | Inferred from stillness and a drop in heart rate, and labelled as an estimate |
 | **Writes Health Connect** | `HeartRateRecord`, `HeartRateVariabilityRmssdRecord`, `OxygenSaturationRecord`, `RespiratoryRateRecord`, `StepsRecord` |
 | **Buzzes the ring** | On notifications and incoming calls, using the captured Gen 3 vibrate command |
 | **Several rings at once** | Keep a spare on the charger and swap when the worn one runs low — every ring stays connected, and only the ones actually being worn are buzzed |
@@ -33,16 +35,27 @@ something the vendor app deliberately does not do, since it restricts haptics to
 
 ## What it deliberately does not do
 
-- **No sleep at all — not even sessions.** The ring never transmits a hypnogram, and it does not
-  mark when you were asleep either. An earlier version derived sessions from contiguous runs on the
-  ring's "sleep" channel; measured against 43 hours of real data that was simply wrong — the ring
-  streams that channel around the clock, and the rule produced a single 32-hour "night". Sleep can
-  probably be inferred from the heart-rate and motion data RingLink already stores, but that is
-  analysis, not protocol, and unvalidated sleep is worse than none.
+- **No sleep stages.** The ring never transmits a hypnogram, so Light/Deep/REM would be invention.
+  Sleep *periods* are estimated — see below — but the stages are not.
 - **No stress / readiness / recovery scores.** Those are vendor analytics, and Health Connect has no
   record type for them.
 - **No pulse waveform.** The ring's `0x47` pages are a sparse 15-minute optical trend (one sample per
   ~30 s), roughly 50× too slow to reconstruct a pulse. They are acknowledged and discarded.
+
+## About the sleep estimate
+
+The ring does not report sleep. It does not even mark when you were asleep — the vendor app infers
+that from the same signals RingLink stores. So sleep here is inference, and it is labelled as such
+in Health Connect.
+
+Two signals carry it, both checked against real nights: motion sitting at its hardware floor (the
+hand genuinely not moving) and a heart rate below your own awake baseline. Requiring the second one
+matters — an evening spent still on the sofa satisfies the first, and a motion-only rule reported
+one real 5-hour night as nine hours.
+
+Known limits, measured rather than assumed: boundaries land within about 15 minutes of the real
+ones, and a night broken by a long waking is reported as two sessions rather than one. Turn it off
+under Health Connect if you would rather have nothing than an estimate.
 
 ## Requirements
 

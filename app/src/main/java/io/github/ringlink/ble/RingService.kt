@@ -280,7 +280,8 @@ class RingService : Service() {
                 )
                 if (settings.exportToHealthConnect) {
                     val exported = exporter.exportPending(clock)
-                    L.i("health connect export: $exported rows")
+                    val sleep = exporter.exportSleep(clock)
+                    L.i("health connect export: $exported rows, $sleep sleep sessions")
                 }
             } finally {
                 state.value = state.value.copy(syncing = false)

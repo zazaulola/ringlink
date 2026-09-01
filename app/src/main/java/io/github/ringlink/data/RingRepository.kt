@@ -109,5 +109,8 @@ class RingRepository(private val dao: RingDao) {
 
     suspend fun epochsBetween(from: Long, to: Long) = dao.epochsBetween(from, to)
     fun epochsSince(counter: Long): Flow<List<EpochEntity>> = dao.epochsSince(counter)
+    suspend fun epochsForRingSince(ringId: String, since: Long) = dao.epochsForRingSince(ringId, since)
+    suspend fun knownRings() = dao.knownRings()
+    suspend fun deviceStatesSince(ringId: String, since: Long) = dao.deviceStatesSince(ringId, since)
     fun summarySince(counter: Long): Flow<Summary?> = dao.summarySince(counter)
 }

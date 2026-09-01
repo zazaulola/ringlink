@@ -65,6 +65,16 @@ interface RingDao {
     @Query("SELECT * FROM epochs WHERE counter >= :since ORDER BY counter")
     fun epochsSince(since: Long): Flow<List<EpochEntity>>
 
+    /** Sleep detection needs a window of context, not just the rows waiting to be exported. */
+    @Query("SELECT * FROM epochs WHERE ringId = :ringId AND counter >= :since ORDER BY counter")
+    suspend fun epochsForRingSince(ringId: String, since: Long): List<EpochEntity>
+
+    @Query("SELECT DISTINCT ringId FROM epochs")
+    suspend fun knownRings(): List<String>
+
+    @Query("SELECT * FROM device_state WHERE ringId = :ringId AND recordedAt >= :since ORDER BY recordedAt")
+    suspend fun deviceStatesSince(ringId: String, since: Long): List<DeviceStateEntity>
+
     @Query(
         """
         SELECT MIN(counter) AS firstCounter,

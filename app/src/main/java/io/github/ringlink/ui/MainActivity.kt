@@ -159,7 +159,7 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     !ui.healthConnectAvailable ->
                         Text("Not available on this device.")
                     ui.healthConnectGranted ->
-                        Text("Connected — heart rate, HRV, SpO₂, respiratory rate and steps.")
+                        Text("Connected — heart rate, HRV, SpO₂, respiratory rate, skin temperature, steps and estimated sleep.")
                     else -> {
                         Text("Permission needed to write your ring data.")
                         Button(onClick = { healthPermissions.launch(vm.exporter.permissions) }) {
@@ -168,6 +168,12 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     }
                 }
                 ToggleRow("Export to Health Connect", ui.exportToHealthConnect, vm::setExport)
+                ToggleRow("Estimate sleep", ui.estimateSleep, vm::setEstimateSleep)
+                Text(
+                    "The ring does not report sleep, so it is inferred from stillness and a " +
+                        "drop in heart rate — a good estimate, not a measurement.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 OutlinedButton(onClick = { vm.reExport() }, Modifier.fillMaxWidth()) {
                     Text("Re-export everything")
                 }

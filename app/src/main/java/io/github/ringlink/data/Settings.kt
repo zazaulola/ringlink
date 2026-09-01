@@ -56,6 +56,16 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_BUZZ_CALLS, true)
         set(v) = prefs.edit { putBoolean(KEY_BUZZ_CALLS, v) }
 
+    /**
+     * Whether to estimate sleep from movement and heart rate.
+     *
+     * The ring does not report sleep, so this is inference rather than measurement — worth having,
+     * worth being able to turn off, and worth labelling as an estimate wherever it appears.
+     */
+    var estimateSleep: Boolean
+        get() = prefs.getBoolean(KEY_SLEEP, true)
+        set(v) = prefs.edit { putBoolean(KEY_SLEEP, v) }
+
     var exportToHealthConnect: Boolean
         get() = prefs.getBoolean(KEY_EXPORT_HC, true)
         set(v) = prefs.edit { putBoolean(KEY_EXPORT_HC, v) }
@@ -94,6 +104,7 @@ class Settings(context: Context) {
         const val KEY_BUZZ_NOTIF = "buzz_notifications"
         const val KEY_BUZZ_CALLS = "buzz_calls"
         const val KEY_EXPORT_HC = "export_health_connect"
+        const val KEY_SLEEP = "estimate_sleep"
         const val KEY_MUTED = "muted_packages"
         const val KEY_QUIET_FROM = "quiet_from"
         const val KEY_QUIET_TO = "quiet_to"
