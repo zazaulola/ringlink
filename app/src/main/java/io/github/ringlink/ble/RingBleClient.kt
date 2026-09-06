@@ -35,6 +35,8 @@ class RingBleClient(private val context: Context) : RingTransport {
 
     private var gatt: BluetoothGatt? = null
     private val writeLock = Mutex()
+    private val readLock = Mutex()
+    @Volatile private var pendingRead: Pair<UUID, CompletableDeferred<ByteArray?>>? = null
     private var pendingWrite: CompletableDeferred<Boolean>? = null
     private var connected = CompletableDeferred<Boolean>()
     private var servicesReady = CompletableDeferred<Boolean>()
@@ -94,6 +96,21 @@ class RingBleClient(private val context: Context) : RingTransport {
             val ok = status == BluetoothGatt.GATT_SUCCESS
             L.i("notifications enabled=$ok")
             if (!servicesReady.isCompleted) servicesReady.complete(ok)
+        }
+
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            ch: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int,
+        ) {
+            completeRead(ch, if (status == BluetoothGatt.GATT_SUCCESS) value else null)
+        }
+
+        @Deprecated("Pre-33 callback; the modern one above carries the value directly.")
+        override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
+            @Suppress("DEPRECATION")
+            completeRead(ch, if (status == BluetoothGatt.GATT_SUCCESS) ch.value else null)
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
@@ -216,6 +233,45 @@ class RingBleClient(private val context: Context) : RingTransport {
      * Used for one-shot commands like a buzz, which have no stream to recover them: the sync engine
      * re-reads a page it failed to ack, but a dropped buzz is simply a buzz the user never feels.
      */
+    private fun completeRead(ch: BluetoothGattCharacteristic, value: ByteArray?) {
+        pendingRead?.takeIf { it.first == ch.uuid }?.second?.complete(value)
+    }
+
+    /**
+     * Read the ring's Device Information Service.
+     *
+     * This is standard Bluetooth (service 0x180a), not the vendor's protocol — no undocumented
+     * command is sent, so it carries none of the risk that probing the proprietary opcode space
+     * does. It is also the only trustworthy way to know the hardware: the generation is otherwise
+     * inferred from the advertised name, which a user can rename.
+     */
+    suspend fun readDeviceInfo(): DeviceInfo? {
+        val g = gatt ?: return null
+        val service = g.getService(DIS_SERVICE) ?: return null
+        suspend fun read(uuid: UUID): String? {
+            val ch = service.getCharacteristic(uuid) ?: return null
+            return readLock.withLock {
+                val slot = CompletableDeferred<ByteArray?>()
+                pendingRead = ch.uuid to slot
+                if (!g.readCharacteristic(ch)) {
+                    pendingRead = null
+                    return@withLock null
+                }
+                val bytes = withTimeoutOrNull(READ_TIMEOUT_MS) { slot.await() }
+                pendingRead = null
+                bytes?.toString(Charsets.UTF_8)?.trim { it <= ' ' }?.takeIf { it.isNotEmpty() }
+            }
+        }
+        val info = DeviceInfo(
+            manufacturer = read(DIS_MANUFACTURER),
+            model = read(DIS_MODEL),
+            serial = read(DIS_SERIAL),
+            firmware = read(DIS_FIRMWARE),
+            hardware = read(DIS_HARDWARE),
+        )
+        return if (info.isEmpty) null else info
+    }
+
     suspend fun writeReliably(bytes: ByteArray, attempts: Int = 8): Boolean {
         repeat(attempts) { attempt ->
             if (writeOnce(bytes)) return true
@@ -241,6 +297,14 @@ class RingBleClient(private val context: Context) : RingTransport {
         val NOTIFY_CHAR: UUID = UUID.fromString("8327ad97-2d87-4a22-a8ce-6dd7971c0437")
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val WRITE_TIMEOUT_MS = 5_000L
+        private const val READ_TIMEOUT_MS = 3_000L
+
+        private val DIS_SERVICE: UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
+        private val DIS_MODEL: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
+        private val DIS_SERIAL: UUID = UUID.fromString("00002a25-0000-1000-8000-00805f9b34fb")
+        private val DIS_FIRMWARE: UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+        private val DIS_HARDWARE: UUID = UUID.fromString("00002a27-0000-1000-8000-00805f9b34fb")
+        private val DIS_MANUFACTURER: UUID = UUID.fromString("00002a29-0000-1000-8000-00805f9b34fb")
         private const val RETRY_BASE_MS = 120L
         private const val RETRY_STEP_MS = 60L
 

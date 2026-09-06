@@ -69,6 +69,7 @@ class RingRepository(private val dao: RingDao) {
                     skinTempB = descriptor.skinTempB,
                     batteryMillivolts = descriptor.batteryMillivolts,
                     onCharger = descriptor.onCharger,
+                    state = descriptor.state,
                 ),
             )
         }

@@ -49,5 +49,13 @@ data class DeviceStateEntity(
     val skinTempB: Double,
     val batteryMillivolts: Int,
     val onCharger: Boolean,
+    /**
+     * The ring's raw state byte.
+     *
+     * Only 0x04 (charging) is known for certain. The rest is kept because the mapping can only be
+     * learned by correlating these values against periods the ring was known to be worn — and that
+     * is impossible if the byte is discarded on arrival, which it was.
+     */
+    val state: Int = 0,
     val exportedAt: Long? = null,
 )

@@ -76,7 +76,9 @@ class RingService : Service() {
         exporter = HealthExporter(this, repo, settings)
         clock = RingClock(settings.epochAnchor, settings.epochCalibrated)
         if (settings.buzzOnCalls) {
-            callMonitor = CallMonitor(this) { scope.launch { buzz(null) } }.also { it.start() }
+            callMonitor = CallMonitor(this) {
+                scope.launch { buzz(null, BuzzPattern.CALL) }
+            }.also { it.start() }
         }
         startForegroundNotification()
         publishRings()
@@ -143,7 +145,15 @@ class RingService : Service() {
             val connected = client.connect(address)
             L.i("connect $address -> $connected")
             updateRing(address) { it.copy(connected = connected) }
-            if (connected) startIdleLoop(address)
+            if (connected) {
+                // Read the ring's own identity once per connection: standard GATT, and the only
+                // trustworthy source for generation and firmware.
+                runCatching { client.readDeviceInfo() }.getOrNull()?.let { info ->
+                    L.i("$address is ${info.summary()}")
+                    updateRing(address) { it.copy(info = info) }
+                }
+                startIdleLoop(address)
+            }
             connected
         }
 
@@ -250,7 +260,20 @@ class RingService : Service() {
      * the connected ones that are not charging; if that leaves nobody, fall back to any connection
      * rather than dropping the notification.
      */
-    suspend fun buzz(key: String?) {
+    /**
+     * How an alert feels on the finger.
+     *
+     * Built from repeats of the one vibrate command verified on this hardware rather than from the
+     * protocol's pattern byte, of which only 0x01 has been confirmed here. Repetition is
+     * distinguishable on a finger and cannot misfire on a ring whose firmware reads that byte
+     * differently.
+     */
+    enum class BuzzPattern(val pulses: Int, val gapMs: Long) {
+        NOTIFICATION(1, 0),
+        CALL(3, 260),
+    }
+
+    suspend fun buzz(key: String?, pattern: BuzzPattern = BuzzPattern.NOTIFICATION) {
         val requestedAt = System.currentTimeMillis()
         if (key != null && recentlyBuzzed(key, requestedAt)) {
             L.d("buzz skipped: $key buzzed moments ago")
@@ -276,7 +299,12 @@ class RingService : Service() {
         targets.forEach { ring ->
             val client = clientFor(ring.address)
             val ok = if (ring.canVibrate) {
-                client.writeReliably(Opcodes.VIBRATE)
+                var any = false
+                repeat(pattern.pulses) { pulse ->
+                    if (client.writeReliably(Opcodes.VIBRATE)) any = true
+                    if (pulse < pattern.pulses - 1) delay(pattern.gapMs)
+                }
+                any
             } else {
                 // Only Gen 3 has a motor, but every generation has the Find-My-Ring LED — so an
                 // older ring signals with light rather than saying nothing at all.
@@ -559,6 +587,7 @@ class RingService : Service() {
         val battery: Int? = null,
         val onCharger: Boolean = false,
         val skinTemp: Double? = null,
+        val info: DeviceInfo? = null,
     ) {
         val shortName: String get() = name.substringAfterLast('-', name)
         val canVibrate: Boolean get() = Ring(address, name).canVibrate

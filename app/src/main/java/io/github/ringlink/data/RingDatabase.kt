@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [EpochEntity::class, SportEntity::class, DeviceStateEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class RingDatabase : RoomDatabase() {
@@ -23,9 +23,16 @@ abstract class RingDatabase : RoomDatabase() {
                 context.applicationContext,
                 RingDatabase::class.java,
                 "ringlink.db",
-            ).addMigrations(migrateToMultiRing(Settings(context).primaryAddress ?: "unknown"))
+            ).addMigrations(migrateToMultiRing(Settings(context).primaryAddress ?: "unknown"), MIGRATION_2_3)
                 .build()
                 .also { instance = it }
+        }
+
+        /** Keeps the ring's raw state byte, so its meaning can be learned from real data. */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE device_state ADD COLUMN state INTEGER NOT NULL DEFAULT 0")
+            }
         }
 
         /**
