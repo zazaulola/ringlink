@@ -44,8 +44,14 @@ object Opcodes {
     const val CHANNEL_SPORT = 0x02
     const val CHANNEL_ALL_DAY = 0x03
 
-    /** Draining only the sleep channel loses all daytime SpO2 — sync both. */
-    val HISTORY_CHANNELS = intArrayOf(CHANNEL_SLEEP, CHANNEL_ALL_DAY)
+    /**
+     * Every channel worth draining.
+     *
+     * Sleep alone loses all daytime SpO2; without the sport channel the ring's own activity log —
+     * per-interval heart rate and steps — stays on the ring and is eventually overwritten. Each
+     * channel keeps an independent resume pointer, so draining one never disturbs another.
+     */
+    val HISTORY_CHANNELS = intArrayOf(CHANNEL_SLEEP, CHANNEL_ALL_DAY, CHANNEL_SPORT)
 
     // --- ready-made commands -------------------------------------------------------------------
     val STATUS_HELLO = byteArrayOf(0x01, 0x00, 0x00)
@@ -55,6 +61,12 @@ object Opcodes {
     val POLL = byteArrayOf(0x95.toByte(), 0x00, 0x00)
     val LIVE_HR_MODE = byteArrayOf(0x06, 0x01, 0x00)
     val LIVE_SPO2_MODE = byteArrayOf(0x06, 0x02, 0x00)
+
+    /**
+     * Leaves live-measurement mode. Inferred rather than captured — see [LiveMeasurement.stop] —
+     * and always sent best-effort, never relied upon.
+     */
+    val LIVE_MODE_OFF = byteArrayOf(0x06, 0x00, 0x00)
     val ACK_47 = byteArrayOf(0xC7.toByte(), 0x00, 0x00)
     val ACK_4C = byteArrayOf(0xCC.toByte(), 0x00, 0x00)
     val ACK_4D = byteArrayOf(0xCD.toByte(), 0x00, 0x00)

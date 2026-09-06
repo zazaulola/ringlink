@@ -19,6 +19,7 @@ import androidx.health.connect.client.units.Percentage
 import androidx.health.connect.client.units.Temperature
 import androidx.health.connect.client.units.TemperatureDelta
 import io.github.ringlink.data.DeviceStateEntity
+import io.github.ringlink.data.SportEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.protocol.RingClock
 import java.time.Instant
@@ -135,6 +136,51 @@ class HealthConnectWriter(private val context: Context) {
      * Steps come from the live descriptor's running daily total, so consecutive snapshots are
      * differenced into interval records. A decrease means the ring rolled over to a new day.
      */
+    /**
+     * The ring's own activity log: steps and heart rate per interval, from the sport channel.
+     *
+     * This is the better source for steps. The descriptor-derived counterpart below only sees the
+     * periods the phone happened to be connected, whereas the ring records this whether or not
+     * anything was listening.
+     */
+    fun mapSport(rows: List<SportEntity>, clock: RingClock): List<Record> {
+        val out = ArrayList<Record>()
+        val ordered = rows.sortedWith(compareBy({ it.ringId }, { it.counter }))
+        for ((index, row) in ordered.withIndex()) {
+            val start = Instant.ofEpochSecond(clock.toUnixSeconds(row.counter))
+            // Measure the interval from the data rather than assuming it: the sport channel's
+            // cadence is not something this project has confirmed, and a wrong constant would
+            // stretch or squash every interval in Health Connect. The gap to the next record from
+            // the same ring is the interval; a lone or distant record falls back to a short,
+            // conservative span so it cannot overlap its neighbours.
+            val next = ordered.getOrNull(index + 1)?.takeIf { it.ringId == row.ringId }
+            val gap = next?.let { clock.toUnixSeconds(it.counter) - start.epochSecond }
+            val span = gap?.takeIf { it in 1..MAX_SPORT_SPAN_SECONDS } ?: FALLBACK_SPORT_SPAN_SECONDS
+            val end = start.plusSeconds(span)
+            if (row.steps > 0) {
+                out += StepsRecord(
+                    startTime = start,
+                    startZoneOffset = zoneFor(start),
+                    endTime = end,
+                    endZoneOffset = zoneFor(end),
+                    count = row.steps.toLong(),
+                    metadata = meta("sport-steps-${row.ringId}-${row.counter}"),
+                )
+            }
+            row.heartRate?.let { hr ->
+                out += HeartRateRecord(
+                    startTime = start,
+                    startZoneOffset = zoneFor(start),
+                    endTime = end,
+                    endZoneOffset = zoneFor(end),
+                    samples = listOf(HeartRateRecord.Sample(time = start, beatsPerMinute = hr.toLong())),
+                    metadata = meta("sport-hr-${row.ringId}-${row.counter}"),
+                )
+            }
+        }
+        return out
+    }
+
     fun mapSteps(rows: List<DeviceStateEntity>): List<Record> {
         val out = ArrayList<Record>()
         for (i in 1 until rows.size) {
@@ -250,6 +296,8 @@ class HealthConnectWriter(private val context: Context) {
     private companion object {
         const val CHUNK = 500
         const val TEMPERATURE_CHUNK = 120
+        const val MAX_SPORT_SPAN_SECONDS = 300L
+        const val FALLBACK_SPORT_SPAN_SECONDS = 10L
         const val EPOCH_SECONDS = 150L
     }
 }

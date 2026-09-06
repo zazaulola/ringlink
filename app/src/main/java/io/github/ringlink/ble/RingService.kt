@@ -17,6 +17,8 @@ import io.github.ringlink.data.Settings
 import io.github.ringlink.health.HealthExporter
 import io.github.ringlink.protocol.Descriptor
 import io.github.ringlink.protocol.Opcodes
+import io.github.ringlink.protocol.LiveMeasurement
+import io.github.ringlink.protocol.LiveMode
 import io.github.ringlink.protocol.RingClock
 import io.github.ringlink.protocol.SyncSession
 import io.github.ringlink.trigger.CallMonitor
@@ -59,6 +61,7 @@ class RingService : Service() {
     private val idleJobs = ConcurrentHashMap<String, Job>()
     private val lastBuzz = HashMap<String, Long>()
     private val syncing = Mutex()
+    private val measuring = Mutex()
     private var watchdogJob: Job? = null
     private var callMonitor: CallMonitor? = null
     private var notificationStarted = false
@@ -88,6 +91,15 @@ class RingService : Service() {
                 scope.launch { buzz(key) }
             }
             ACTION_REEXPORT -> scope.launch { reExport() }
+            ACTION_MEASURE -> {
+                val mode = if (intent.getStringExtra(EXTRA_MODE) == MODE_SPO2) {
+                    LiveMode.SPO2
+                } else {
+                    LiveMode.HEART_RATE
+                }
+                scope.launch { measureNow(mode) }
+            }
+            ACTION_FIND -> scope.launch { findRing() }
             else -> scope.launch { connectAll() }
         }
         startWatchdog()
@@ -163,10 +175,53 @@ class RingService : Service() {
                                     skinTemp = d.skinTempA,
                                 )
                             }
+                            checkBattery(address, d.batteryPercent, d.onCharger)
                         }
                 }
             }
         }
+    }
+
+    /**
+     * Warn once per discharge that a ring is running low.
+     *
+     * A ring that dies stops recording, and the gap is not recoverable afterwards — so this is worth
+     * interrupting for. The flag is cleared when the ring goes on charge, which is what makes it a
+     * once-per-discharge warning rather than a repeating nag.
+     */
+    private fun checkBattery(address: String, percent: Int, onCharger: Boolean) {
+        val threshold = settings.lowBatteryPercent
+        if (onCharger) {
+            if (settings.lowBatteryWarned(address)) settings.setLowBatteryWarned(address, false)
+            return
+        }
+        if (threshold <= 0 || percent > threshold) return
+        if (settings.lowBatteryWarned(address)) return
+
+        settings.setLowBatteryWarned(address, true)
+        val name = settings.rings.firstOrNull { it.address == address }?.shortName ?: address
+        L.i("low battery on $name: $percent%")
+        notifyLowBattery(name, percent)
+    }
+
+    private fun notifyLowBattery(ringName: String, percent: Int) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    BATTERY_CHANNEL_ID,
+                    "Ring battery",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
+            )
+        }
+        val notification = Notification.Builder(this, BATTERY_CHANNEL_ID)
+            .setContentTitle("$ringName is at $percent%")
+            .setContentText("Charge it soon — a flat ring records nothing, and that gap cannot be recovered.")
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setAutoCancel(true)
+            .build()
+        runCatching { nm.notify(BATTERY_NOTIFICATION_ID + ringName.hashCode() % 100, notification) }
     }
 
     private fun startWatchdog() {
@@ -312,6 +367,85 @@ class RingService : Service() {
         }
     }
 
+    /**
+     * Take a reading right now, the way the vendor app's "measure" button does.
+     *
+     * The measurement owns the link while it runs — one consumer per frame channel — so the idle
+     * loop is stopped first and restarted afterwards, exactly as a sync does. Only a worn ring is
+     * measured: a ring in its charger has no finger against the sensor and would report nothing.
+     */
+    suspend fun measureNow(mode: LiveMode) {
+        val ring = settings.rings.firstOrNull { r ->
+            clientFor(r.address).isConnected && state.value.ringOrNull(r.address)?.onCharger != true
+        } ?: settings.rings.firstOrNull { clientFor(it.address).isConnected }
+
+        if (ring == null) {
+            state.value = state.value.copy(measuring = null, status = "No ring connected")
+            return
+        }
+        if (!measuring.tryLock()) {
+            L.d("measurement already running")
+            return
+        }
+        try {
+            val client = clientFor(ring.address)
+            idleJobs.remove(ring.address)?.cancelAndJoin()
+            state.value = state.value.copy(
+                measuring = Measuring(mode, ring.shortName, null, 0),
+                status = "Measuring ${mode.label.lowercase()}…",
+            )
+            L.i("live ${mode.name} measurement on ${ring.shortName}")
+
+            val result = LiveMeasurement(client).measure(mode) { sample ->
+                state.value = state.value.copy(
+                    measuring = Measuring(mode, ring.shortName, sample.value, sample.elapsedSeconds),
+                )
+            }
+
+            state.value = state.value.copy(
+                measuring = null,
+                lastMeasurement = result?.let { LastMeasurement(mode, it, System.currentTimeMillis()) }
+                    ?: state.value.lastMeasurement,
+                status = if (result != null) {
+                    "${mode.label}: $result${if (mode == LiveMode.SPO2) "%" else " bpm"}"
+                } else {
+                    "No reading — make sure the ring is snug on your finger"
+                },
+            )
+            L.i("live ${mode.name} result=$result")
+        } finally {
+            measuring.unlock()
+            startIdleLoop(ring.address)
+        }
+    }
+
+    /**
+     * Blink every connected ring's locator LED, to find one that has been put down somewhere.
+     *
+     * Deliberately not restricted to worn rings: a ring you are looking for is by definition not on
+     * your finger.
+     */
+    suspend fun findRing() {
+        val connected = settings.rings.filter { clientFor(it.address).isConnected }
+        if (connected.isEmpty()) {
+            state.value = state.value.copy(status = "No ring connected")
+            return
+        }
+        state.value = state.value.copy(status = "Blinking ${connected.size} ring(s)…")
+        repeat(FIND_BLINKS) {
+            connected.forEach { ring ->
+                val client = clientFor(ring.address)
+                client.writeReliably(Opcodes.LED_ON)
+                // Gen 3 can buzz as well; on a ring without a motor the light is the whole signal.
+                if (ring.canVibrate) client.writeReliably(Opcodes.VIBRATE)
+            }
+            delay(FIND_ON_MS)
+            connected.forEach { clientFor(it.address).writeReliably(Opcodes.LED_OFF) }
+            delay(FIND_OFF_MS)
+        }
+        state.value = state.value.copy(status = "Connected")
+    }
+
     private suspend fun reExport() {
         state.value = state.value.copy(status = "Re-exporting…")
         if (exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
@@ -430,8 +564,20 @@ class RingService : Service() {
         val canVibrate: Boolean get() = Ring(address, name).canVibrate
     }
 
+    /** A measurement in flight, so the UI can show the value settling. */
+    data class Measuring(
+        val mode: LiveMode,
+        val ringName: String,
+        val latest: Int?,
+        val elapsedSeconds: Int,
+    )
+
+    data class LastMeasurement(val mode: LiveMode, val value: Int, val at: Long)
+
     data class State(
         val rings: List<RingState> = emptyList(),
+        val measuring: Measuring? = null,
+        val lastMeasurement: LastMeasurement? = null,
         val syncing: Boolean = false,
         val status: String = "Idle",
         val lastSyncAt: Long = 0,
@@ -444,16 +590,25 @@ class RingService : Service() {
         const val ACTION_BUZZ = "io.github.ringlink.BUZZ"
         const val ACTION_STOP = "io.github.ringlink.STOP"
         const val ACTION_REEXPORT = "io.github.ringlink.REEXPORT"
+        const val ACTION_MEASURE = "io.github.ringlink.MEASURE"
+        const val ACTION_FIND = "io.github.ringlink.FIND"
+        const val EXTRA_MODE = "mode"
+        const val MODE_SPO2 = "spo2"
         const val EXTRA_KEY = "key"
 
         private const val CHANNEL_ID = "ring_link"
         private const val NOTIFICATION_ID = 1
+        private const val BATTERY_CHANNEL_ID = "ring_battery"
+        private const val BATTERY_NOTIFICATION_ID = 100
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
         private const val STALE_BUZZ_MS = 15_000L
         private const val WATCHDOG_INTERVAL_MS = 45_000L
         private const val BUZZ_COOLDOWN_MS = 3_000L
         private const val LED_ON_MS = 400L
         private const val MAX_TRACKED_KEYS = 64
+        private const val FIND_BLINKS = 6
+        private const val FIND_ON_MS = 500L
+        private const val FIND_OFF_MS = 400L
 
         @Volatile
         var instance: RingService? = null
@@ -464,6 +619,14 @@ class RingService : Service() {
 
         fun start(context: Context, action: String? = null) {
             val i = Intent(context, RingService::class.java).apply { this.action = action }
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
+        }
+
+        fun measure(context: Context, spo2: Boolean) {
+            val i = Intent(context, RingService::class.java).apply {
+                action = ACTION_MEASURE
+                if (spo2) putExtra(EXTRA_MODE, MODE_SPO2)
+            }
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }
 

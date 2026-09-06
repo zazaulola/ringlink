@@ -26,7 +26,7 @@ class RingRepository(private val dao: RingDao) {
 
         override suspend fun onEpochs(channel: Int, records: List<EpochRecord>) {
             if (records.isEmpty()) return
-            dao.insertEpochs(
+            dao.upsertEpochs(
                 records.map {
                     EpochEntity(
                         ringId = ringId,
@@ -109,6 +109,9 @@ class RingRepository(private val dao: RingDao) {
 
     suspend fun epochsBetween(from: Long, to: Long) = dao.epochsBetween(from, to)
     fun epochsSince(counter: Long): Flow<List<EpochEntity>> = dao.epochsSince(counter)
+    fun stepsBetween(from: Long, to: Long): Flow<Int> = dao.stepsBetween(from, to)
+    fun restingHeartRate(from: Long, to: Long, sampleCount: Int = 12): Flow<Int?> =
+        dao.restingHeartRateBetween(from, to, sampleCount)
     suspend fun epochsForRingSince(ringId: String, since: Long) = dao.epochsForRingSince(ringId, since)
     suspend fun knownRings() = dao.knownRings()
     suspend fun deviceStatesSince(ringId: String, since: Long) = dao.deviceStatesSince(ringId, since)

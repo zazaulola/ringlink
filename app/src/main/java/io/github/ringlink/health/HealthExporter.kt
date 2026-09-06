@@ -53,18 +53,20 @@ class HealthExporter(
 
         val epochs = repo.unexportedEpochs(BATCH)
         val states = repo.unexportedDeviceStates(BATCH)
-        if (epochs.isEmpty() && states.isEmpty()) return 0
+        val sport = repo.unexportedSport(BATCH)
+        if (epochs.isEmpty() && states.isEmpty() && sport.isEmpty()) return 0
 
         val records = ArrayList<Record>()
         records += writer.mapEpochs(epochs, clock)
         records += writer.mapSteps(states)
         records += temperatureRecords(states)
+        records += writer.mapSport(sport, clock)
 
         if (records.isNotEmpty()) writer.insert(records)
 
         // Only mark exported once the insert has returned — a failure leaves the rows pending.
-        repo.markExported(epochs = epochs, sport = emptyList(), states = states)
-        return epochs.size + states.size
+        repo.markExported(epochs = epochs, sport = sport, states = states)
+        return epochs.size + states.size + sport.size
     }
 
     /**

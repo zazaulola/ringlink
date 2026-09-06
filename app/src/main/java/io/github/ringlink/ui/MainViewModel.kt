@@ -12,6 +12,7 @@ import io.github.ringlink.ble.RingBleClient
 import io.github.ringlink.ble.RingScanner
 import io.github.ringlink.ble.RingService
 import io.github.ringlink.data.Ring
+import java.util.Calendar
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
@@ -58,6 +59,7 @@ data class UiState(
     val buzzOnCalls: Boolean = true,
     val exportToHealthConnect: Boolean = true,
     val estimateSleep: Boolean = true,
+    val stepGoal: Int = 10_000,
     val watchEnabled: Boolean = false,
     val daysSinceExposure: Long? = null,
     val checkInPending: Boolean = false,
@@ -105,6 +107,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectWindow(w: HistoryWindow) { window.value = w }
 
+    /**
+     * Midnight today, in the ring's counter space.
+     *
+     * Counters are stored raw, so every "today" query has to be expressed in them rather than in
+     * wall-clock milliseconds.
+     */
+    private fun todayStartCounter(): Long {
+        val midnight = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis / 1000
+        return clock.cursorForNow(midnight)
+    }
+
+    private val today = MutableStateFlow(todayStartCounter())
+
+    val stepsToday: StateFlow<Int> = today
+        .flatMapLatest { repo.stepsBetween(it, it + DAY_SECONDS) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    /** Over the last day rather than since midnight: a morning reading needs last night to exist. */
+    val restingHeartRate: StateFlow<Int?> = today
+        .flatMapLatest { repo.restingHeartRate(it - DAY_SECONDS, it + DAY_SECONDS) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun refreshToday() { today.value = todayStartCounter() }
+
     /** Convert a stored counter to a wall-clock instant for charting. */
     fun timeOf(counter: Long): Long = clock.toUnixSeconds(counter)
 
@@ -133,6 +164,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 buzzOnCalls = settings.buzzOnCalls,
                 exportToHealthConnect = settings.exportToHealthConnect,
                 estimateSleep = settings.estimateSleep,
+                stepGoal = settings.stepGoal,
                 watchEnabled = watch.enabled,
                 daysSinceExposure = watch.daysSinceExposure,
                 checkInPending = watch.pendingSince != 0L,
@@ -243,6 +275,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         RingService.start(getApplication(), RingService.ACTION_BUZZ)
     }
 
+    fun setStepGoal(goal: Int) {
+        settings.stepGoal = goal
+        refresh()
+    }
+
     fun setEstimateSleep(on: Boolean) {
         settings.estimateSleep = on
         _ui.value = _ui.value.copy(estimateSleep = on)
@@ -257,9 +294,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun syncNow() = RingService.start(getApplication(), RingService.ACTION_SYNC)
     fun testBuzz() = RingService.start(getApplication(), RingService.ACTION_BUZZ)
     fun reExport() = RingService.start(getApplication(), RingService.ACTION_REEXPORT)
+    fun measureHeartRate() = RingService.measure(getApplication(), spo2 = false)
+    fun measureSpo2() = RingService.measure(getApplication(), spo2 = true)
+    fun findRing() = RingService.start(getApplication(), RingService.ACTION_FIND)
 
     private companion object {
         const val SCAN_MILLIS = 20_000L
+        const val DAY_SECONDS = 24 * 3600L
     }
 
     private fun hasNotificationAccess(context: Context): Boolean {

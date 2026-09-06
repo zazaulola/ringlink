@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -30,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.ringlink.health.HealthExporter
+import io.github.ringlink.protocol.LiveMeasurement
+import io.github.ringlink.protocol.LiveMode
 import java.text.DateFormat
 import java.util.Date
 
@@ -87,6 +91,8 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                     HistoryScreen(vm)
                     return@Column
                 }
+            TodayCard(vm)
+
             SectionCard("Rings") {
                 if (ui.rings.isEmpty()) {
                     Text("No rings yet.")
@@ -136,6 +142,51 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                         Text("Search for a new ring")
                     }
                 }
+            }
+
+            SectionCard("Measure now") {
+                val live = service.measuring
+                if (live != null) {
+                    Text(
+                        live.latest?.let { "$it${if (live.mode == LiveMode.SPO2) " %" else " bpm"}" }
+                            ?: "…",
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+                    Text(
+                        "${live.mode.label} on ${live.ringName} · ${live.elapsedSeconds}s of " +
+                            "${LiveMeasurement.DEFAULT_DURATION_SECONDS}s",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    LinearProgressIndicator(
+                        progress = {
+                            live.elapsedSeconds.toFloat() /
+                                LiveMeasurement.DEFAULT_DURATION_SECONDS
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    service.lastMeasurement?.let { last ->
+                        val unit = if (last.mode == LiveMode.SPO2) "%" else " bpm"
+                        Text("Last: ${last.mode.label} ${last.value}$unit")
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { vm.measureHeartRate() }) { Text("Heart rate") }
+                        Button(onClick = { vm.measureSpo2() }) { Text("Blood oxygen") }
+                    }
+                    Text(
+                        "Takes about ${LiveMeasurement.DEFAULT_DURATION_SECONDS} seconds. Keep the " +
+                            "ring snug and your hand still — the sensor needs a few seconds to " +
+                            "settle, so the reading moves before it lands.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                OutlinedButton(onClick = { vm.findRing() }, Modifier.fillMaxWidth()) {
+                    Text("Find my ring")
+                }
+                Text(
+                    "Blinks the locator light (and buzzes, on a ring that can) for a few seconds.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
 
             SectionCard("Data") {
@@ -270,6 +321,43 @@ private fun RingRow(
             Text("$charge · $where$temp$motor", style = MaterialTheme.typography.bodySmall)
         }
         OutlinedButton(onClick = onRemove) { Text("Forget") }
+    }
+}
+
+/**
+ * Today at a glance — the view a ring app is expected to open on.
+ *
+ * Steps come from the ring's own activity log rather than from descriptor deltas, so the count does
+ * not depend on how long the phone happened to be connected.
+ */
+@Composable
+private fun TodayCard(vm: MainViewModel) {
+    val steps by vm.stepsToday.collectAsState()
+    val resting by vm.restingHeartRate.collectAsState()
+    val ui by vm.ui.collectAsState()
+
+    LaunchedEffect(Unit) { vm.refreshToday() }
+
+    SectionCard("Today") {
+        val goal = ui.stepGoal
+        Text("$steps steps", style = MaterialTheme.typography.headlineSmall)
+        LinearProgressIndicator(
+            progress = { if (goal > 0) (steps.toFloat() / goal).coerceIn(0f, 1f) else 0f },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            if (steps >= goal) "Goal of $goal reached" else "${goal - steps} to go of $goal",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        resting?.let {
+            Text("Resting heart rate  $it bpm", style = MaterialTheme.typography.bodyMedium)
+        }
+        if (steps == 0) {
+            Text(
+                "Nothing logged yet today — sync the ring to pull what it has recorded.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 

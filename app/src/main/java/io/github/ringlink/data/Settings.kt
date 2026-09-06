@@ -66,6 +66,20 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_SLEEP, true)
         set(v) = prefs.edit { putBoolean(KEY_SLEEP, v) }
 
+    /** Daily step goal, the one number a ring app is expected to show progress against. */
+    var stepGoal: Int
+        get() = prefs.getInt(KEY_STEP_GOAL, 10_000)
+        set(v) = prefs.edit { putInt(KEY_STEP_GOAL, v.coerceIn(1_000, 100_000)) }
+
+    /** Warn once per discharge when a ring gets low, so it is charged before it stops recording. */
+    var lowBatteryPercent: Int
+        get() = prefs.getInt(KEY_LOW_BATTERY, 15)
+        set(v) = prefs.edit { putInt(KEY_LOW_BATTERY, v.coerceIn(0, 50)) }
+
+    fun lowBatteryWarned(ringId: String): Boolean = prefs.getBoolean(KEY_WARNED + ringId, false)
+    fun setLowBatteryWarned(ringId: String, warned: Boolean) =
+        prefs.edit { putBoolean(KEY_WARNED + ringId, warned) }
+
     var exportToHealthConnect: Boolean
         get() = prefs.getBoolean(KEY_EXPORT_HC, true)
         set(v) = prefs.edit { putBoolean(KEY_EXPORT_HC, v) }
@@ -104,6 +118,9 @@ class Settings(context: Context) {
         const val KEY_BUZZ_NOTIF = "buzz_notifications"
         const val KEY_BUZZ_CALLS = "buzz_calls"
         const val KEY_EXPORT_HC = "export_health_connect"
+        const val KEY_STEP_GOAL = "step_goal"
+        const val KEY_LOW_BATTERY = "low_battery_percent"
+        const val KEY_WARNED = "low_battery_warned_"
         const val KEY_SLEEP = "estimate_sleep"
         const val KEY_MUTED = "muted_packages"
         const val KEY_QUIET_FROM = "quiet_from"
