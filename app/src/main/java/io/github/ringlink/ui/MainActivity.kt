@@ -64,6 +64,12 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { vm.refresh() }
 
+    // Storage Access Framework: the user picks where the file goes, so the app needs no storage
+    // permission and the export lands somewhere they chose rather than in private app storage.
+    val exportCsv = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri -> uri?.let { vm.exportCsv(it) } }
+
     val healthPermissions = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract(),
     ) { vm.refresh() }
@@ -112,6 +118,7 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                             canVibrate = ring.canVibrate,
                             skinTemp = live?.skinTemp,
                             info = live?.info?.summary(),
+                            caseBattery = live?.caseBattery,
                             onRemove = { vm.removeRing(ring.address) },
                         )
                     }
@@ -230,6 +237,16 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                 OutlinedButton(onClick = { vm.reExport() }, Modifier.fillMaxWidth()) {
                     Text("Re-export everything")
                 }
+                OutlinedButton(
+                    onClick = { exportCsv.launch("ringlink-${System.currentTimeMillis() / 1000}.csv") },
+                    Modifier.fillMaxWidth(),
+                ) { Text("Export all data as CSV") }
+                ui.exportMessage?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                Text(
+                    "Everything the app holds, with each reading's raw ring counter alongside its " +
+                        "timestamp — so the file stays correctable if the time anchor ever is.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Text(
                     "Rewrites all stored records at their current timestamps — use it after a " +
                         "clock correction, or once permission is granted.",
@@ -302,6 +319,7 @@ private fun RingRow(
     canVibrate: Boolean,
     skinTemp: Double?,
     info: String?,
+    caseBattery: Int?,
     onRemove: () -> Unit,
 ) {
     Row(
@@ -321,6 +339,9 @@ private fun RingRow(
             val motor = if (canVibrate) "" else " · no motor, signals with its LED"
             val temp = skinTemp?.let { " · %.1f °C".format(it) } ?: ""
             Text("$charge · $where$temp$motor", style = MaterialTheme.typography.bodySmall)
+            caseBattery?.let {
+                Text("Charging case $it%", style = MaterialTheme.typography.bodySmall)
+            }
             info?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
         OutlinedButton(onClick = onRemove) { Text("Forget") }

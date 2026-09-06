@@ -117,6 +117,13 @@ The vibrate command is not in any public protocol documentation. It was captured
 [RingVibe](https://github.com/zazaulola/lsposed-ringconn-notification-vibrator) by logging the
 vendor app's own writes at the moment it buzzed the ring, then confirmed by replay.
 
+## Standard Bluetooth alongside the vendor service
+
+The ring also exposes the ordinary **Device Information Service** (`0x180a`): manufacturer `0x2a29`,
+model `0x2a24`, serial `0x2a25`, firmware `0x2a26`, hardware `0x2a27`. Reading it involves no vendor
+command at all, and it is the only trustworthy way to identify the hardware — the generation is
+otherwise inferred from an advertised name the user can change.
+
 ## Not on the wire
 
 Sleep stages, stress/readiness scores and the nightly respiratory summary are **computed by the

@@ -99,6 +99,8 @@ fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
             }
         }
 
+        NightsCard(vm)
+
         if (states.isNotEmpty()) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -125,6 +127,64 @@ fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
                 "so those traces are sparser. Gaps are real gaps.",
             style = MaterialTheme.typography.bodySmall,
         )
+    }
+}
+
+/**
+ * Detected nights, with the vitals measured during each.
+ *
+ * Labelled as an estimate throughout, because it is one: the ring reports no sleep of its own, so
+ * these are inferred from stillness and a drop below the wearer's own awake heart rate.
+ */
+@Composable
+private fun NightsCard(vm: MainViewModel) {
+    val nights by vm.nights.collectAsState()
+    val clock = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val day = remember { SimpleDateFormat("EEE d MMM", Locale.getDefault()) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Sleep (estimated)", style = MaterialTheme.typography.titleMedium)
+            if (nights.isEmpty()) {
+                Text(
+                    "No nights detected in this window. Sleep is inferred from stillness and a " +
+                        "drop in heart rate, so a night the ring was not worn leaves no trace.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                return@Column
+            }
+            val average = nights.sumOf { it.hours } / nights.size
+            Text("%.1f h average over %d night%s".format(average, nights.size, if (nights.size == 1) "" else "s"))
+            nights.forEach { night ->
+                val start = Date(night.startUnix * 1000)
+                val end = Date(night.endUnix * 1000)
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(day.format(start), style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "%.1f h · %s–%s".format(night.hours, clock.format(start), clock.format(end)),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    val detail = listOfNotNull(
+                        night.lowestHeartRate?.let { "low ${'$'}it bpm" },
+                        night.averageHeartRate?.let { "avg ${'$'}it bpm" },
+                        night.averageSpo2?.let { "SpO₂ ${'$'}it%" },
+                        night.averageHrv?.let { "HRV ${'$'}it ms" },
+                    ).joinToString(" · ")
+                    if (detail.isNotEmpty()) {
+                        Text(detail, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            Text(
+                "No stages: the ring never sends a hypnogram, and Light/Deep/REM would be invented.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 

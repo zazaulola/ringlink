@@ -147,6 +147,15 @@ interface RingDao {
     )
     fun restingHeartRateBetween(from: Long, to: Long, sampleCount: Int): Flow<Int?>
 
+    @Query("SELECT * FROM epochs WHERE counter > :after ORDER BY counter LIMIT :limit")
+    suspend fun epochsAfter(after: Long, limit: Int): List<EpochEntity>
+
+    @Query("SELECT * FROM device_state ORDER BY recordedAt")
+    suspend fun allDeviceStates(): List<DeviceStateEntity>
+
+    @Query("SELECT * FROM sport ORDER BY counter")
+    suspend fun allSport(): List<SportEntity>
+
     @Query("SELECT DISTINCT ringId FROM epochs")
     suspend fun knownRings(): List<String>
 

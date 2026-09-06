@@ -183,6 +183,8 @@ class RingService : Service() {
                                     battery = d.batteryPercent,
                                     onCharger = d.onCharger,
                                     skinTemp = d.skinTempA,
+                                    caseBattery = d.caseBatteryPercent,
+                                    caseCharging = d.caseCharging,
                                 )
                             }
                             checkBattery(address, d.batteryPercent, d.onCharger)
@@ -588,6 +590,8 @@ class RingService : Service() {
         val onCharger: Boolean = false,
         val skinTemp: Double? = null,
         val info: DeviceInfo? = null,
+        val caseBattery: Int? = null,
+        val caseCharging: Boolean = false,
     ) {
         val shortName: String get() = name.substringAfterLast('-', name)
         val canVibrate: Boolean get() = Ring(address, name).canVibrate

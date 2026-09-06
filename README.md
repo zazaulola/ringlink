@@ -30,6 +30,11 @@ something the vendor app deliberately does not do, since it restricts haptics to
 | **Estimated sleep** | Inferred from stillness and a drop in heart rate, and labelled as an estimate |
 | **Writes Health Connect** | `HeartRateRecord`, `HeartRateVariabilityRmssdRecord`, `OxygenSaturationRecord`, `RespiratoryRateRecord`, `StepsRecord` |
 | **Buzzes the ring** | On notifications and incoming calls, using the captured Gen 3 vibrate command |
+| **Measure on demand** | Tap for a heart-rate or blood-oxygen reading and watch it settle, the way the vendor app's measure button works |
+| **Find my ring** | Blinks the locator LED and buzzes, to find a ring you have put down |
+| **Today** | Steps against a goal and resting heart rate, from the ring's own activity log |
+| **Sleep** | Estimated nights with the vitals measured during each — see below |
+| **Export** | Every reading as CSV, with raw ring counters alongside timestamps |
 | **Several rings at once** | Keep a spare on the charger and swap when the worn one runs low — every ring stays connected, and only the ones actually being worn are buzzed |
 | **Keeps it local** | Everything lands in SQLite first; Health Connect export is a separate, retryable step |
 
@@ -41,6 +46,18 @@ something the vendor app deliberately does not do, since it restricts haptics to
   record type for them.
 - **No pulse waveform.** The ring's `0x47` pages are a sparse 15-minute optical trend (one sample per
   ~30 s), roughly 50× too slow to reconstruct a pulse. They are acknowledged and discarded.
+
+## What the vendor app has that this does not
+
+Deliberately absent, because the ring does not measure them and inventing health data is worse than
+omitting it: **sleep stages**, **stress / readiness / sleep scores**, and the **blood-pressure and
+vascular trends**, which on the vendor side are modelled rather than measured.
+
+Not yet built, but possible: automatic workout detection and workout sessions, cycle tracking from
+temperature, weekly and monthly reports, and sedentary or high-heart-rate reminders.
+
+Two things here have no vendor equivalent at all: **notifications and calls buzzing the ring**, and
+the **check-in alarm** that sounds through a silenced phone.
 
 ## About the sleep estimate
 

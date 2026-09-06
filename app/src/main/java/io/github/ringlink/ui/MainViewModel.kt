@@ -11,6 +11,8 @@ import io.github.ringlink.ble.DiscoveredRing
 import io.github.ringlink.ble.RingBleClient
 import io.github.ringlink.ble.RingScanner
 import io.github.ringlink.ble.RingService
+import io.github.ringlink.L
+import io.github.ringlink.data.CsvExport
 import io.github.ringlink.data.Ring
 import java.util.Calendar
 import io.github.ringlink.data.RingDatabase
@@ -20,6 +22,8 @@ import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.Summary
 import io.github.ringlink.health.HealthExporter
+import io.github.ringlink.health.SleepDetector
+import io.github.ringlink.health.SleepInput
 import io.github.ringlink.watch.AlarmNotifier
 import io.github.ringlink.watch.CheckIn
 import io.github.ringlink.watch.WatchSettings
@@ -29,7 +33,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -60,6 +66,7 @@ data class UiState(
     val exportToHealthConnect: Boolean = true,
     val estimateSleep: Boolean = true,
     val stepGoal: Int = 10_000,
+    val exportMessage: String? = null,
     val watchEnabled: Boolean = false,
     val daysSinceExposure: Long? = null,
     val checkInPending: Boolean = false,
@@ -135,6 +142,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun refreshToday() { today.value = todayStartCounter() }
+
+    /** A detected night with the vitals measured during it — what a sleep screen is expected to show. */
+    data class Night(
+        val startUnix: Long,
+        val endUnix: Long,
+        val averageHeartRate: Int?,
+        val lowestHeartRate: Int?,
+        val averageSpo2: Int?,
+        val averageHrv: Int?,
+    ) {
+        val hours: Double get() = (endUnix - startUnix) / 3600.0
+    }
+
+    /**
+     * Nights in the selected window, newest first.
+     *
+     * Recomputed from stored epochs rather than read back from Health Connect, so the app does not
+     * depend on an export having succeeded — and so turning the estimate off makes it disappear from
+     * both places at once.
+     */
+    val nights: StateFlow<List<Night>> = combine(window, history) { _, rows -> rows }
+        .map { rows ->
+            if (!settings.estimateSleep) return@map emptyList()
+            val periods = SleepDetector.detect(
+                rows.map { SleepInput(it.counter, it.heartRate, it.motionSum) },
+            )
+            periods.map { period ->
+                val inside = rows.filter { it.counter in period.startCounter..period.endCounter }
+                val hr = inside.mapNotNull { it.heartRate }
+                val spo2 = inside.mapNotNull { it.spo2 }
+                val hrv = inside.mapNotNull { it.hrvRmssd }
+                Night(
+                    startUnix = clock.toUnixSeconds(period.startCounter),
+                    endUnix = clock.toUnixSeconds(period.endCounter),
+                    averageHeartRate = hr.averageOrNull(),
+                    lowestHeartRate = hr.minOrNull(),
+                    averageSpo2 = spo2.averageOrNull(),
+                    averageHrv = hrv.averageOrNull(),
+                )
+            }.sortedByDescending { it.startUnix }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** Convert a stored counter to a wall-clock instant for charting. */
     fun timeOf(counter: Long): Long = clock.toUnixSeconds(counter)
@@ -294,6 +343,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun syncNow() = RingService.start(getApplication(), RingService.ACTION_SYNC)
     fun testBuzz() = RingService.start(getApplication(), RingService.ACTION_BUZZ)
     fun reExport() = RingService.start(getApplication(), RingService.ACTION_REEXPORT)
+
+    fun exportCsv(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val rows = runCatching {
+                CsvExport(getApplication(), RingDatabase.get(getApplication()).dao())
+                    .writeTo(uri, clock)
+            }.onFailure { L.e("csv export failed", it) }.getOrDefault(0)
+            _ui.value = _ui.value.copy(
+                exportMessage = if (rows > 0) "Exported ${'$'}rows rows" else "Export failed",
+            )
+        }
+    }
     fun measureHeartRate() = RingService.measure(getApplication(), spo2 = false)
     fun measureSpo2() = RingService.measure(getApplication(), spo2 = true)
     fun findRing() = RingService.start(getApplication(), RingService.ACTION_FIND)
@@ -310,3 +371,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return enabled.contains(context.packageName)
     }
 }
+
+/** Mean as a whole number, or null when there is nothing to average. */
+private fun List<Int>.averageOrNull(): Int? = if (isEmpty()) null else (sum().toDouble() / size).toInt()
