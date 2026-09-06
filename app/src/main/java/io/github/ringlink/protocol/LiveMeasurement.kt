@@ -34,6 +34,7 @@ class LiveMeasurement(private val transport: RingTransport) {
     suspend fun measure(
         mode: LiveMode,
         durationSeconds: Int = DEFAULT_DURATION_SECONDS,
+        stillConnected: () -> Boolean = { true },
         onSample: (LiveSample) -> Unit = {},
     ): Int? {
         val samples = ArrayList<Int>()
@@ -47,6 +48,7 @@ class LiveMeasurement(private val transport: RingTransport) {
             val deadline = System.currentTimeMillis() + durationSeconds * 1000L
             var lastPoll = 0L
             while (System.currentTimeMillis() < deadline) {
+                if (!stillConnected()) break
                 val now = System.currentTimeMillis()
                 if (now - lastPoll >= POLL_INTERVAL_MS) {
                     transport.write(Opcodes.POLL)

@@ -241,6 +241,9 @@ class RingService : Service() {
         watchdogJob = scope.launch {
             while (isActive) {
                 delay(WATCHDOG_INTERVAL_MS)
+                // A measurement or sync owns the link while it runs, and reconnecting under it
+                // tears the session down — which is exactly how a measurement came back empty.
+                if (measuring.isLocked || syncing.isLocked) continue
                 settings.rings.forEach { ring ->
                     val client = clientFor(ring.address)
                     if (!client.isConnected && !client.backgroundConnectArmed) {
@@ -426,7 +429,10 @@ class RingService : Service() {
             )
             L.i("live ${mode.name} measurement on ${ring.shortName}")
 
-            val result = LiveMeasurement(client).measure(mode) { sample ->
+            val result = LiveMeasurement(client).measure(
+                mode = mode,
+                stillConnected = { client.isConnected },
+            ) { sample ->
                 state.value = state.value.copy(
                     measuring = Measuring(mode, ring.shortName, sample.value, sample.elapsedSeconds),
                 )
