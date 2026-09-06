@@ -97,6 +97,13 @@ Two hazards this uncovered, both now guarded in code:
 Layout is discriminated structurally, not by value, so a genuine desaturation is not mistaken for a
 sentinel.
 
+**Byte 4 on ACTIVITY rows is heart rate, not steps.** Another reading of the layout has `[4:6]` as
+a little-endian step count on exactly these rows. Measured against real data from a Gen 3, it is
+not: ACTIVITY and SLEEP_VITALS epochs alternate every 150 s and their values run continuously
+across the boundary (105 → 106 → 102 → 105), which a step count cannot do — it would read
+105 → 0 → 106 → 3. Across 1374 samples the range is 64–147 with a mean of 97, which is a pulse.
+Worth re-checking on other firmware, since the two layouts are discriminated structurally.
+
 **`0x10` / `0x87` descriptor — 19 bytes**, streamed every 30–60 s with no sync session needed:
 battery % at 1, state at 2 (`0x04` = charging), steps `u16` at 4, two skin-temperature channels in
 0.1 °C at 6 and 8, battery mV at 14, charging-case byte at 17.
