@@ -39,15 +39,32 @@ class HealthExporter(
         repo.resetExports()
         var total = 0
         while (true) {
-            val n = exportPending(clock)
+            val n = exportBatch(clock)
             if (n == 0) break
             total += n
         }
         return total
     }
 
+    /**
+     * Export everything waiting, not just one batch.
+     *
+     * Batching bounds memory, but stopping after a single batch meant a backlog drained at 500 rows
+     * per sync — after an outage that is days of catching up. This keeps going until nothing is
+     * pending, with a ceiling so a row that somehow never gets marked cannot spin forever.
+     */
+    suspend fun exportAllPending(clock: RingClock): Int {
+        var total = 0
+        repeat(MAX_BATCHES) {
+            val n = exportBatch(clock)
+            if (n == 0) return total
+            total += n
+        }
+        return total
+    }
+
     /** Returns how many source rows were exported. */
-    suspend fun exportPending(clock: RingClock): Int {
+    suspend fun exportBatch(clock: RingClock): Int {
         if (!settings.exportToHealthConnect) return 0
         if (!hasPermissions()) return 0
 
@@ -134,6 +151,7 @@ class HealthExporter(
 
     private companion object {
         const val BATCH = 500
+        const val MAX_BATCHES = 200
         /** Anything outside this is not a finger. */
         val PLAUSIBLE_SKIN_TEMP = 20.0..42.0
         const val SLEEP_WINDOW_SECONDS = 7 * 24 * 3600L
