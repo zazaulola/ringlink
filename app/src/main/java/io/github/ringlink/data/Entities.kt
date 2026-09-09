@@ -1,5 +1,6 @@
 package io.github.ringlink.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 
 /**
@@ -56,6 +57,7 @@ data class DeviceStateEntity(
      * learned by correlating these values against periods the ring was known to be worn — and that
      * is impossible if the byte is discarded on arrival, which it was.
      */
+    @ColumnInfo(defaultValue = "0")
     val state: Int = 0,
     val exportedAt: Long? = null,
 )

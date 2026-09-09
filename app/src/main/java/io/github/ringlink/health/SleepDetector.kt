@@ -36,6 +36,9 @@ object SleepDetector {
     /** Baseline window: half a day either side, so it tracks the person rather than the population. */
     private const val BASELINE_WINDOW_SECONDS = 43_200L
 
+    /** Baselines are computed on this grid, not per reading. */
+    private const val BASELINE_BUCKET_SECONDS = 3_600L
+
     private const val EPOCH_SECONDS = 150L
 
     /** Brief stirrings do not end a night. */
@@ -55,8 +58,14 @@ object SleepDetector {
         val usable = epochs.filter { it.heartRate != null }.sortedBy { it.counter }
         if (usable.size < MIN_EPOCHS) return emptyList()
 
+        // Baselines are computed once per hour rather than once per epoch. Recomputing per epoch
+        // meant rescanning — and re-sorting — every reading in a 24-hour window for every reading in
+        // the series: quadratic, and at a 30-day window some 300 million operations with a sort
+        // inside each, which freezes whatever thread it lands on. The baseline is a smooth
+        // 24-hour statistic, so an hourly grid loses nothing real.
+        val baselines = hourlyBaselines(usable)
         val asleep = usable.map { epoch ->
-            val baseline = awakeBaseline(usable, epoch.counter)
+            val baseline = baselines[epoch.counter / BASELINE_BUCKET_SECONDS]
             epoch.counter to (
                 baseline != null &&
                     epoch.motion <= STILL &&
@@ -79,6 +88,42 @@ object SleepDetector {
         start?.let { runs += SleepPeriod(it, last + EPOCH_SECONDS) }
 
         return runs.filter { it.seconds >= MIN_SESSION_SECONDS }
+    }
+
+    /**
+     * The awake baseline for every hour the data covers.
+     *
+     * [usable] is sorted by counter, so each hour's window is a contiguous slice found by binary
+     * search rather than by filtering the whole series.
+     */
+    private fun hourlyBaselines(usable: List<SleepInput>): Map<Long, Int?> {
+        val counters = usable.map { it.counter }
+        val firstBucket = usable.first().counter / BASELINE_BUCKET_SECONDS
+        val lastBucket = usable.last().counter / BASELINE_BUCKET_SECONDS
+        val out = HashMap<Long, Int?>()
+        for (bucket in firstBucket..lastBucket) {
+            val centre = bucket * BASELINE_BUCKET_SECONDS
+            val from = counters.lowerBoundOf(centre - BASELINE_WINDOW_SECONDS)
+            val to = counters.lowerBoundOf(centre + BASELINE_WINDOW_SECONDS + 1)
+            if (to - from < MIN_BASELINE_SAMPLES) { out[bucket] = null; continue }
+            val nearby = ArrayList<Int>(to - from)
+            for (i in from until to) usable[i].heartRate?.let { nearby += it }
+            if (nearby.size < MIN_BASELINE_SAMPLES) { out[bucket] = null; continue }
+            nearby.sort()
+            out[bucket] = nearby[(nearby.size * AWAKE_PERCENTILE / 100).coerceAtMost(nearby.size - 1)]
+        }
+        return out
+    }
+
+    /** Index of the first counter >= [target]. */
+    private fun List<Long>.lowerBoundOf(target: Long): Int {
+        var lo = 0
+        var hi = size
+        while (lo < hi) {
+            val mid = (lo + hi) / 2
+            if (this[mid] < target) lo = mid + 1 else hi = mid
+        }
+        return lo
     }
 
     /**

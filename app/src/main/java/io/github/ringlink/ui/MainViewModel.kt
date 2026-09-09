@@ -28,6 +28,7 @@ import io.github.ringlink.watch.AlarmNotifier
 import io.github.ringlink.watch.CheckIn
 import io.github.ringlink.watch.WatchSettings
 import io.github.ringlink.protocol.RingClock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.launchIn
@@ -183,6 +185,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }.sortedByDescending { it.startUnix }
         }
+        // Off the main thread: detection walks a whole window of readings, and a month of them is
+        // not something to run where it can stall the UI.
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** Convert a stored counter to a wall-clock instant for charting. */
