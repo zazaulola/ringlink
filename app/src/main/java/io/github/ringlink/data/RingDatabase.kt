@@ -28,7 +28,14 @@ abstract class RingDatabase : RoomDatabase() {
                 .also { instance = it }
         }
 
-        /** Keeps the ring's raw state byte, so its meaning can be learned from real data. */
+        /**
+         * Keeps the ring's raw state byte, so its meaning can be learned from real data.
+         *
+         * The entity deliberately does NOT declare `@ColumnInfo(defaultValue = "0")` to match the
+         * SQL default here. Adding it changes the entity's identity hash while the version stays
+         * at 3, so every database already migrated to 3 fails to open with "Room cannot verify the
+         * data integrity". Room accepts the difference as it stands; leave it alone.
+         */
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE device_state ADD COLUMN state INTEGER NOT NULL DEFAULT 0")

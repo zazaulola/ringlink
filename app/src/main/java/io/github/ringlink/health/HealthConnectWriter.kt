@@ -231,7 +231,11 @@ class HealthConnectWriter(private val context: Context) {
         return rows.chunked(TEMPERATURE_CHUNK).mapNotNull { group ->
             val ordered = group.sortedBy { it.recordedAt }
             val start = Instant.ofEpochMilli(ordered.first().recordedAt)
-            val end = Instant.ofEpochMilli(ordered.last().recordedAt)
+            // The end must sit strictly AFTER the last reading. Health Connect accepts a delta at
+            // exactly startTime but requires every delta to be strictly before endTime, so ending
+            // the record on the last reading's own instant throws — which crashed the whole export,
+            // taking heart rate and steps down with the temperature.
+            val end = Instant.ofEpochMilli(ordered.last().recordedAt).plusSeconds(1)
             if (!end.isAfter(start)) return@mapNotNull null
             SkinTemperatureRecord(
                 startTime = start,
