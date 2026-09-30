@@ -9,7 +9,7 @@ import android.telephony.TelephonyManager
 import java.util.concurrent.Executor
 
 /**
- * Reports when the phone starts ringing.
+ * Reports when the phone starts and stops ringing.
  *
  * Uses TelephonyCallback on Android 12+ (PhoneStateListener is deprecated there) and falls back on
  * older releases. Both are fed by the same framework dispatch an Xposed hook would intercept, so a
@@ -17,7 +17,11 @@ import java.util.concurrent.Executor
  * VoIP calls, for which only the caller's number is withheld.
  */
 @SuppressLint("MissingPermission")
-class CallMonitor(private val context: Context, private val onRinging: () -> Unit) {
+class CallMonitor(
+    private val context: Context,
+    private val onRingingStarted: () -> Unit,
+    private val onRingingStopped: () -> Unit = {},
+) {
 
     private var callback: Any? = null
     private var ringing = false
@@ -54,15 +58,22 @@ class CallMonitor(private val context: Context, private val onRinging: () -> Uni
         callback = null
     }
 
-    /** RINGING repeats while the phone rings, so latch it and reset when the call resolves. */
+    /**
+     * RINGING is reported repeatedly while the phone rings, so it is latched.
+     *
+     * The edges are what matter: the start opens the alert and anything else closes it. An unheard
+     * phone should keep the ring going until the call is answered or gives up, and nothing else can
+     * tell us when that happened.
+     */
     private fun handle(state: Int) {
         if (state == TelephonyManager.CALL_STATE_RINGING) {
             if (!ringing) {
                 ringing = true
-                onRinging()
+                onRingingStarted()
             }
-        } else {
+        } else if (ringing) {
             ringing = false
+            onRingingStopped()
         }
     }
 }

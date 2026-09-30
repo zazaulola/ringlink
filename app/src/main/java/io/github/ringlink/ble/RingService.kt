@@ -21,6 +21,7 @@ import io.github.ringlink.protocol.LiveMeasurement
 import io.github.ringlink.protocol.LiveMode
 import io.github.ringlink.protocol.RingClock
 import io.github.ringlink.protocol.SyncSession
+import io.github.ringlink.trigger.BurstLimiter
 import io.github.ringlink.trigger.CallMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -59,11 +60,12 @@ class RingService : Service() {
     private val clients = ConcurrentHashMap<String, RingBleClient>()
     private val connectLocks = ConcurrentHashMap<String, Mutex>()
     private val idleJobs = ConcurrentHashMap<String, Job>()
-    private val lastBuzz = HashMap<String, Long>()
+    private val notificationBurst = BurstLimiter()
     private val syncing = Mutex()
     private val measuring = Mutex()
     private var watchdogJob: Job? = null
     private var callMonitor: CallMonitor? = null
+    private var callAlertJob: Job? = null
     private var notificationStarted = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -76,9 +78,11 @@ class RingService : Service() {
         exporter = HealthExporter(this, repo, settings)
         clock = RingClock(settings.epochAnchor, settings.epochCalibrated)
         if (settings.buzzOnCalls) {
-            callMonitor = CallMonitor(this) {
-                scope.launch { buzz(null, BuzzPattern.CALL) }
-            }.also { it.start() }
+            callMonitor = CallMonitor(
+                context = this,
+                onRingingStarted = { startCallAlert() },
+                onRingingStopped = { stopCallAlert() },
+            ).also { it.start() }
         }
         startForegroundNotification()
         publishRings()
@@ -112,6 +116,7 @@ class RingService : Service() {
         instance = null
         idleJobs.values.forEach { it.cancel() }
         watchdogJob?.cancel()
+        callAlertJob?.cancel()
         callMonitor?.stop()
         clients.values.forEach { it.disconnect() }
         scope.cancel()
@@ -266,6 +271,32 @@ class RingService : Service() {
      * rather than dropping the notification.
      */
     /**
+     * Keep buzzing for as long as the phone rings.
+     *
+     * A notification is a fact to be told once; a ringing phone is a thing waiting to be answered,
+     * and the ring is often the only part of it the wearer can feel. So this repeats until the call
+     * is picked up or gives up, rather than announcing itself once and leaving.
+     *
+     * It is bounded anyway: no real call rings past [MAX_CALL_ALERT_MS], and if the end of the call
+     * were ever missed the ring must not be left buzzing indefinitely.
+     */
+    private fun startCallAlert() {
+        callAlertJob?.cancel()
+        callAlertJob = scope.launch {
+            val until = System.currentTimeMillis() + MAX_CALL_ALERT_MS
+            while (isActive && System.currentTimeMillis() < until) {
+                buzz(null, BuzzPattern.CALL)
+                delay(CALL_ALERT_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopCallAlert() {
+        callAlertJob?.cancel()
+        callAlertJob = null
+    }
+
+    /**
      * How an alert feels on the finger.
      *
      * Built from repeats of the one vibrate command verified on this hardware rather than from the
@@ -280,8 +311,8 @@ class RingService : Service() {
 
     suspend fun buzz(key: String?, pattern: BuzzPattern = BuzzPattern.NOTIFICATION) {
         val requestedAt = System.currentTimeMillis()
-        if (key != null && recentlyBuzzed(key, requestedAt)) {
-            L.d("buzz skipped: $key buzzed moments ago")
+        if (key != null && !notificationBurst.allows(requestedAt)) {
+            L.d("buzz skipped: burst budget spent ($key)")
             return
         }
 
@@ -323,7 +354,11 @@ class RingService : Service() {
                 L.w("alert dropped: ${ring.shortName} did not accept the write")
             }
         }
-        if (delivered && key != null) synchronized(lastBuzz) { lastBuzz[key] = System.currentTimeMillis() }
+        // Spend the budget only on a buzz the ring actually took: one that never arrived was not
+        // felt, and must not silence the next notification.
+        // Spend the budget only on a buzz the ring actually took: one that never arrived was not
+        // felt, and must not silence the next notification.
+        if (delivered && key != null) notificationBurst.spend()
     }
 
     /** Pulse the locator LED: the only signal a ring without a motor can give. */
@@ -333,15 +368,6 @@ class RingService : Service() {
         // Best effort: the light times out on its own, so a failed off is not a failed alert.
         client.writeReliably(Opcodes.LED_OFF)
         return true
-    }
-
-    private fun recentlyBuzzed(key: String, now: Long): Boolean = synchronized(lastBuzz) {
-        val previous = lastBuzz[key]
-        if (previous != null && now - previous < BUZZ_COOLDOWN_MS) return true
-        if (lastBuzz.size >= MAX_TRACKED_KEYS) {
-            lastBuzz.entries.minByOrNull { it.value }?.let { lastBuzz.remove(it.key) }
-        }
-        false
     }
 
     private fun shouldAutoSync(): Boolean {
@@ -642,9 +668,12 @@ class RingService : Service() {
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
         private const val STALE_BUZZ_MS = 15_000L
         private const val WATCHDOG_INTERVAL_MS = 45_000L
-        private const val BUZZ_COOLDOWN_MS = 3_000L
+        /** Gap between buzzes while the phone is ringing. */
+        private const val CALL_ALERT_INTERVAL_MS = 3_000L
+
+        /** A backstop, in case the end of a call is ever missed. */
+        private const val MAX_CALL_ALERT_MS = 90_000L
         private const val LED_ON_MS = 400L
-        private const val MAX_TRACKED_KEYS = 64
         private const val FIND_BLINKS = 6
         private const val FIND_ON_MS = 500L
         private const val FIND_OFF_MS = 400L
