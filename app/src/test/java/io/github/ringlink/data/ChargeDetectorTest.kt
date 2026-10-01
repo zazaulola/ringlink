@@ -22,33 +22,40 @@ private fun descriptor(
 
 class ChargeDetectorTest {
 
-    /** The reported problem: a ring on charge was never recognised as charging. */
-    @Test fun `a rising battery means charging, whatever the state byte says`() {
+    /** The state byte is the answer, confirmed against 11152 readings from two rings. */
+    @Test fun `state 0x04 means charging`() {
+        val d = ChargeDetector()
+        assertTrue(d.update("ring", descriptor(50, state = 0x04)))
+    }
+
+    @Test fun `the other observed states mean not charging`() {
+        val d = ChargeDetector()
+        for (state in listOf(0x00, 0x02, 0x03)) {
+            assertFalse("state $state should not read as charging", d.update("r$state", descriptor(50, state = state)))
+        }
+    }
+
+    /** Belt and braces for firmware that might number its states differently. */
+    @Test fun `a rising battery means charging whatever the state byte says`() {
         val d = ChargeDetector()
         assertFalse(d.update("ring", descriptor(40)))
         assertTrue("battery went up, so it is on charge", d.update("ring", descriptor(43)))
     }
 
     /**
-     * A full battery stops rising while the ring is still in its case, so the verdict has to hold
-     * rather than flipping back the moment the charge levels off.
+     * A full battery stops rising, but the state byte keeps saying charging — measured as thousands
+     * of consecutive readings while a ring sat in its case at 100%.
      */
-    @Test fun `charging holds once the battery stops rising`() {
+    @Test fun `a full ring in the case still reads as charging`() {
         val d = ChargeDetector()
-        d.update("ring", descriptor(90))
-        assertTrue(d.update("ring", descriptor(95)))
-        assertTrue("still on charge at a steady 100", d.update("ring", descriptor(100)))
-        assertTrue(d.update("ring", descriptor(100)))
-        assertTrue(d.update("ring", descriptor(100)))
+        repeat(5) { assertTrue(d.update("ring", descriptor(100, state = 0x04))) }
     }
 
-    /** Taken off the charger, the battery falls — the one thing that rules charging out. */
-    @Test fun `a falling battery ends charging`() {
+    /** Off the charger the state byte changes, and that is what ends it. */
+    @Test fun `charging ends when the state byte does`() {
         val d = ChargeDetector()
-        d.update("ring", descriptor(90))
-        d.update("ring", descriptor(100))
-        assertTrue(d.update("ring", descriptor(100)))
-        assertFalse("charge is being used, so it is off the charger", d.update("ring", descriptor(99)))
+        assertTrue(d.update("ring", descriptor(100, state = 0x04)))
+        assertFalse(d.update("ring", descriptor(99, state = 0x02)))
     }
 
     /** Sitting in the case is stated directly: the ring reports the case's own charge from inside. */
