@@ -183,16 +183,18 @@ class RingService : Service() {
                     Opcodes.RESP_DESCRIPTOR_QUERY, Opcodes.RESP_DESCRIPTOR_FETCH ->
                         Descriptor.parse(frame)?.let { d ->
                             repo.sinkFor(address).onDescriptor(d)
+                            val charging = repo.isCharging(address)
                             updateRing(address) {
                                 it.copy(
                                     battery = d.batteryPercent,
-                                    onCharger = d.onCharger,
+                                    onCharger = charging,
+                                    worn = d.looksWorn,
                                     skinTemp = d.skinTempA,
                                     caseBattery = d.caseBatteryPercent,
                                     caseCharging = d.caseCharging,
                                 )
                             }
-                            checkBattery(address, d.batteryPercent, d.onCharger)
+                            checkBattery(address, d.batteryPercent, charging)
                         }
                 }
             }
@@ -323,7 +325,11 @@ class RingService : Service() {
             L.w("buzz dropped: no ring connected")
             return
         }
-        val worn = connected.filterNot { state.value.ringOrNull(it.address)?.onCharger == true }
+        // Prefer rings that look worn; fall back to any that is merely not charging, so a ring
+        // whose temperature has not arrived yet is not passed over.
+        val notCharging = connected.filterNot { state.value.ringOrNull(it.address)?.onCharger == true }
+        val worn = notCharging.filter { state.value.ringOrNull(it.address)?.worn == true }
+            .ifEmpty { notCharging }
         val targets = worn.ifEmpty { connected }
 
         if (System.currentTimeMillis() - requestedAt > STALE_BUZZ_MS) {
@@ -598,9 +604,10 @@ class RingService : Service() {
             // say nothing about it rather than asserting "worn" on no evidence.
             val where = when {
                 !ring.connected -> "offline"
-                ring.battery == null -> "connected"
                 ring.onCharger -> "charging"
-                else -> "worn"
+                ring.battery == null -> "connected"
+                ring.worn -> "worn"
+                else -> "off finger"
             }
             listOfNotNull(ring.shortName, charge, where).joinToString(" ")
         }
@@ -620,6 +627,8 @@ class RingService : Service() {
         val connected: Boolean = false,
         val battery: Int? = null,
         val onCharger: Boolean = false,
+        /** Judged from skin temperature, not stated by the ring — see Descriptor.looksWorn. */
+        val worn: Boolean = false,
         val skinTemp: Double? = null,
         val info: DeviceInfo? = null,
         val caseBattery: Int? = null,

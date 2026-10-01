@@ -194,7 +194,7 @@ class RecordsTest {
         f[17] = 0xff.toByte()
         val d = Descriptor.parse(f)!!
         assertEquals(76, d.batteryPercent)
-        assertTrue(d.onCharger)
+        assertTrue(d.stateSaysCharging)
         assertEquals(300, d.steps)
         assertEquals(31.4, d.skinTempA, 0.001)
         assertEquals(26.6, d.skinTempB, 0.001)

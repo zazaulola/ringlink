@@ -19,6 +19,17 @@ import kotlinx.coroutines.flow.Flow
  */
 class RingRepository(private val dao: RingDao) {
 
+    /**
+     * One detector for the whole app.
+     *
+     * Descriptors arrive by two routes — the idle loop and a sync — and both land here, so deciding
+     * charging in this one place is what keeps the stored history and the screen from disagreeing.
+     */
+    private val charge = ChargeDetector()
+
+    /** The latest charging verdict for a ring, for callers that need it without a descriptor. */
+    fun isCharging(ringId: String): Boolean = charge.isCharging(ringId)
+
     /** A sink bound to one ring, so a sync can only write rows attributed to the ring it drained. */
     fun sinkFor(ringId: String): RecordSink = RingSink(ringId)
 
@@ -59,6 +70,7 @@ class RingRepository(private val dao: RingDao) {
         }
 
         override suspend fun onDescriptor(descriptor: Descriptor) {
+            val charging = charge.update(ringId, descriptor)
             dao.insertDeviceState(
                 DeviceStateEntity(
                     ringId = ringId,
@@ -68,7 +80,7 @@ class RingRepository(private val dao: RingDao) {
                     skinTempA = descriptor.skinTempA,
                     skinTempB = descriptor.skinTempB,
                     batteryMillivolts = descriptor.batteryMillivolts,
-                    onCharger = descriptor.onCharger,
+                    onCharger = charging,
                     state = descriptor.state,
                 ),
             )

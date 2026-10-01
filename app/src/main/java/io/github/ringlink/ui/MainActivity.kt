@@ -119,6 +119,7 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                             skinTemp = live?.skinTemp,
                             info = live?.info?.summary(),
                             caseBattery = live?.caseBattery,
+                            worn = live?.worn == true,
                             onRemove = { vm.removeRing(ring.address) },
                         )
                     }
@@ -320,6 +321,7 @@ private fun RingRow(
     skinTemp: Double?,
     info: String?,
     caseBattery: Int?,
+    worn: Boolean,
     onRemove: () -> Unit,
 ) {
     Row(
@@ -332,9 +334,12 @@ private fun RingRow(
             val charge = battery?.let { "$it%" } ?: "—"
             val where = when {
                 !connected -> "disconnected"
+                onCharger -> "charging"
                 battery == null -> "connected"
-                onCharger -> "charging (will not buzz)"
-                else -> "worn"
+                worn -> "worn"
+                // Not "worn" by default: a ring can perfectly well be connected and sitting on a
+                // desk, and saying otherwise was simply wrong.
+                else -> "off finger"
             }
             val motor = if (canVibrate) "" else " · no motor, signals with its LED"
             val temp = skinTemp?.let { " · %.1f °C".format(it) } ?: ""

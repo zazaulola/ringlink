@@ -10,12 +10,46 @@ data class Descriptor(
     val batteryMillivolts: Int,
     val caseByte: Int,
 ) {
-    val onCharger: Boolean get() = state == 0x04
+    /**
+     * The ring is sitting in its charging case.
+     *
+     * It reports the case's own charge in [caseByte], and it can only know that from inside the
+     * case — `0xff` is what it sends when there is no case around it. This is a far more direct
+     * statement than [stateSaysCharging] below.
+     */
+    val inChargingCase: Boolean get() = caseByte != 0xff
+
+    /**
+     * State byte 0x04, believed to mean charging.
+     *
+     * Treated as a hint rather than the answer: across five days of readings from two rings it was
+     * never once true, including while they were certainly being charged. The rest of the byte's
+     * values are still unknown, which is why the raw value is stored.
+     */
+    val stateSaysCharging: Boolean get() = state == 0x04
+
     val caseBatteryPercent: Int? get() = if (caseByte == 0xff) null else caseByte and 0x7f
-    val caseCharging: Boolean get() = caseByte != 0xff && (caseByte and 0x80) != 0
+    val caseCharging: Boolean get() = inChargingCase && (caseByte and 0x80) != 0
+
+    /**
+     * Whether the ring looks like it is on a finger, judged by temperature.
+     *
+     * A worn ring equilibrates towards skin, an unworn one towards the room, and the two are far
+     * enough apart to tell — measured here, 36.0 C on a hand against 26.3 C on a table. It is a
+     * judgement rather than something the ring states, so it is reported as such.
+     */
+    val looksWorn: Boolean get() = skinTempA >= WORN_SKIN_TEMP_C
 
     companion object {
         const val LENGTH = 19
+
+        /**
+         * Above this the ring is taken to be on a finger.
+         *
+         * Deliberately nearer room temperature than skin: a cold hand in a cold room should still
+         * read as worn, and the cost of being wrong in that direction is only a label.
+         */
+        const val WORN_SKIN_TEMP_C = 30.0
 
         fun parse(frame: ByteArray): Descriptor? {
             if (frame.size < LENGTH) return null
