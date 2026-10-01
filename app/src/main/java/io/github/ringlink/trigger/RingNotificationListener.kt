@@ -82,14 +82,26 @@ class RingNotificationListener : NotificationListenerService() {
         return true
     }
 
+    /**
+     * What a notification is saying, as a number — so a re-post of the same thing can be recognised.
+     *
+     * Built from the content and deliberately NOT from `when`. That field is supposed to be when
+     * the event happened, but plenty of apps set it to the current time on every post, so including
+     * it made every re-post look like news — which is exactly the running series of buzzes this was
+     * meant to stop.
+     *
+     * The cost is that an app posting word-for-word identical text twice buzzes once. For
+     * messaging-style notifications that cannot happen, because the conversation length moves; for
+     * the rest, one missed buzz is a far smaller problem than buzzing at every repaint.
+     */
     private fun signatureOf(sbn: StatusBarNotification): Int {
         val n = sbn.notification
         val extras = runCatching { n.extras }.getOrNull()
         return listOf(
-            n.`when`,
             n.number,
             extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
             extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+            extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
             // Messaging apps put the conversation in here; its length moves with each new message.
             extras?.getParcelableArray(Notification.EXTRA_MESSAGES)?.size,
         ).hashCode()
