@@ -156,6 +156,12 @@ interface RingDao {
     @Query("SELECT * FROM sport ORDER BY counter")
     suspend fun allSport(): List<SportEntity>
 
+    @Query(
+        "SELECT * FROM device_state WHERE ringId = :ringId AND caseBattery IS NOT NULL " +
+            "ORDER BY recordedAt DESC LIMIT 1",
+    )
+    suspend fun latestCaseReading(ringId: String): DeviceStateEntity?
+
     @Query("SELECT DISTINCT ringId FROM epochs")
     suspend fun knownRings(): List<String>
 

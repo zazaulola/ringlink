@@ -82,6 +82,8 @@ class RingRepository(private val dao: RingDao) {
                     batteryMillivolts = descriptor.batteryMillivolts,
                     onCharger = charging,
                     state = descriptor.state,
+                    caseBattery = descriptor.caseBatteryPercent,
+                    caseCharging = if (descriptor.inChargingCase) descriptor.caseCharging else null,
                 ),
             )
         }
@@ -90,6 +92,9 @@ class RingRepository(private val dao: RingDao) {
     fun epochCount(): Flow<Int> = dao.epochCount()
     fun pendingExportCount(): Flow<Int> = dao.pendingExportCount()
     fun latestDeviceState(ringId: String): Flow<DeviceStateEntity?> = dao.latestDeviceState(ringId)
+
+    /** The last time this ring was seen in its case, for "how was the case" once it is out. */
+    suspend fun latestCaseReading(ringId: String): DeviceStateEntity? = dao.latestCaseReading(ringId)
     suspend fun newestCounter(ringId: String): Long? = dao.newestCounter(ringId)
 
     suspend fun unexportedEpochs(limit: Int) = dao.unexportedEpochs(limit)

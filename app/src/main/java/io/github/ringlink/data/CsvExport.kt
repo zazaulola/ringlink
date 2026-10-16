@@ -43,12 +43,13 @@ class CsvExport(private val context: Context, private val dao: RingDao) {
                     after = page.last().counter
                 }
 
-                out.write("\nsection,ring,timestamp,battery_percent,battery_mv,steps,skin_temp_a,skin_temp_b,on_charger,state\n")
+                out.write("\nsection,ring,timestamp,battery_percent,battery_mv,steps,skin_temp_a,skin_temp_b,on_charger,state,case_battery,case_charging\n")
                 for (d in dao.allDeviceStates()) {
                     val t = iso.format(Date(d.recordedAt))
                     out.write(
                         "device,${d.ringId},$t,${d.batteryPercent},${d.batteryMillivolts}," +
-                            "${d.steps},${d.skinTempA},${d.skinTempB},${d.onCharger},${d.state}\n",
+                            "${d.steps},${d.skinTempA},${d.skinTempB},${d.onCharger},${d.state}," +
+                            "${d.caseBattery.orBlank()},${d.caseCharging.orBlank()}\n",
                     )
                     rows++
                 }

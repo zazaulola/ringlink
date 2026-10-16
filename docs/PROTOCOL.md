@@ -104,6 +104,16 @@ across the boundary (105 → 106 → 102 → 105), which a step count cannot do 
 105 → 0 → 106 → 3. Across 1374 samples the range is 64–147 with a mean of 97, which is a pulse.
 Worth re-checking on other firmware, since the two layouts are discriminated structurally.
 
+**The charging case is seen only through the ring.** It has no radio of its own; a docked ring
+reports it in descriptor byte `[17]`: low 7 bits are the case's charge, bit `0x80` means the case is
+plugged in, and `0xff` means the ring is out of the case. This matches OpenCircuit's in-case A/B
+captures and the vendor app's two case fields, `chargingCasePower` and `chargingCaseCharging`.
+
+**State only flows inside a session.** On a Gen 3 the ring sends no descriptor at all after a bare
+connection — not on request, not spontaneously — until a session is open. RingLink therefore
+authenticates after every connect and asks with `d0 00 00`, then `07 00 00`, falling back to a sync
+if neither gets an answer. Neither request is destructive; only acknowledging a history page is.
+
 **`0x10` / `0x87` descriptor — 19 bytes**, streamed every 30–60 s with no sync session needed:
 battery % at 1, state at 2 (`0x04` = charging), steps `u16` at 4, two skin-temperature channels in
 0.1 °C at 6 and 8, battery mV at 14, charging-case byte at 17.

@@ -57,5 +57,13 @@ data class DeviceStateEntity(
      * is impossible if the byte is discarded on arrival, which it was.
      */
     val state: Int = 0,
+    /**
+     * The charging case's own charge, as reported by a ring docked in it; null while the ring is
+     * out of the case. The case has no radio, so this is the only way it is ever seen — and storing
+     * it is what lets the app still say how the case was doing after the ring is taken out.
+     */
+    val caseBattery: Int? = null,
+    /** Whether the case itself was plugged in; null while the ring is out of the case. */
+    val caseCharging: Boolean? = null,
     val exportedAt: Long? = null,
 )

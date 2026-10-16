@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.ringlink.health.HealthExporter
+import io.github.ringlink.ble.RingService
 import io.github.ringlink.protocol.LiveMeasurement
 import io.github.ringlink.protocol.LiveMode
 import java.text.DateFormat
@@ -118,7 +119,7 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                             canVibrate = ring.canVibrate,
                             skinTemp = live?.skinTemp,
                             info = live?.info?.summary(),
-                            caseBattery = live?.caseBattery,
+                            caseLine = live?.let { caseLine(it) },
                             worn = live?.worn == true,
                             onRemove = { vm.removeRing(ring.address) },
                         )
@@ -320,7 +321,7 @@ private fun RingRow(
     canVibrate: Boolean,
     skinTemp: Double?,
     info: String?,
-    caseBattery: Int?,
+    caseLine: String?,
     worn: Boolean,
     onRemove: () -> Unit,
 ) {
@@ -344,9 +345,7 @@ private fun RingRow(
             val motor = if (canVibrate) "" else " · no motor, signals with its LED"
             val temp = skinTemp?.let { " · %.1f °C".format(it) } ?: ""
             Text("$charge · $where$temp$motor", style = MaterialTheme.typography.bodySmall)
-            caseBattery?.let {
-                Text("Charging case $it%", style = MaterialTheme.typography.bodySmall)
-            }
+            caseLine?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             info?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
         OutlinedButton(onClick = onRemove) { Text("Forget") }
@@ -387,6 +386,33 @@ private fun TodayCard(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+    }
+}
+
+/**
+ * One line about the ring's charging case.
+ *
+ * The case is only ever seen through a ring docked in it, so while the ring is out this says what
+ * the case was last time rather than going blank — that is exactly when it matters, because the
+ * next charge depends on it.
+ */
+private fun caseLine(ring: RingService.RingState): String? {
+    val live = ring.caseBattery
+    if (live != null) {
+        return "Charging case $live%" + if (ring.caseCharging) " · plugged in" else ""
+    }
+    val last = ring.caseLastPercent ?: return null
+    val at = ring.caseLastSeenAt ?: return "Charging case was $last%"
+    return "Charging case was $last% · ${ago(at)}"
+}
+
+private fun ago(millis: Long): String {
+    val minutes = (System.currentTimeMillis() - millis) / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 48 * 60 -> "${minutes / 60} h ago"
+        else -> "${minutes / (24 * 60)} days ago"
     }
 }
 

@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [EpochEntity::class, SportEntity::class, DeviceStateEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class RingDatabase : RoomDatabase() {
@@ -23,7 +23,7 @@ abstract class RingDatabase : RoomDatabase() {
                 context.applicationContext,
                 RingDatabase::class.java,
                 "ringlink.db",
-            ).addMigrations(migrateToMultiRing(Settings(context).primaryAddress ?: "unknown"), MIGRATION_2_3)
+            ).addMigrations(migrateToMultiRing(Settings(context).primaryAddress ?: "unknown"), MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { instance = it }
         }
@@ -39,6 +39,20 @@ abstract class RingDatabase : RoomDatabase() {
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE device_state ADD COLUMN state INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * Keeps what a docked ring reports about its charging case.
+         *
+         * Both columns are nullable with no SQL default, matching the entity exactly: last time a
+         * column was added with a default the entity did not declare, the mismatch only became a
+         * crash once someone "fixed" it. Nullable, defaultless columns have nothing to disagree on.
+         */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE device_state ADD COLUMN caseBattery INTEGER")
+                db.execSQL("ALTER TABLE device_state ADD COLUMN caseCharging INTEGER")
             }
         }
 

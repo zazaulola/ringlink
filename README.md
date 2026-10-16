@@ -35,6 +35,7 @@ something the vendor app deliberately does not do, since it restricts haptics to
 | **Today** | Steps against a goal and resting heart rate, from the ring's own activity log |
 | **Sleep** | Estimated nights with the vitals measured during each — see below |
 | **Export** | Every reading as CSV, with raw ring counters alongside timestamps |
+| **Charging case** | Its charge and whether it is plugged in, remembered after the ring is taken out; a notice when the spare ring is charged and when the case is about to go flat |
 | **Several rings at once** | Keep a spare on the charger and swap when the worn one runs low — every ring stays connected, and only the ones actually being worn are buzzed |
 | **Keeps it local** | Everything lands in SQLite first; Health Connect export is a separate, retryable step |
 

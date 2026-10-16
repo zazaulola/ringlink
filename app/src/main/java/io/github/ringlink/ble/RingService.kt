@@ -19,6 +19,7 @@ import io.github.ringlink.protocol.Descriptor
 import io.github.ringlink.protocol.Opcodes
 import io.github.ringlink.protocol.LiveMeasurement
 import io.github.ringlink.protocol.LiveMode
+import io.github.ringlink.protocol.RecordSink
 import io.github.ringlink.protocol.RingClock
 import io.github.ringlink.protocol.SyncSession
 import io.github.ringlink.trigger.BurstLimiter
@@ -61,6 +62,9 @@ class RingService : Service() {
     private val connectLocks = ConcurrentHashMap<String, Mutex>()
     private val idleJobs = ConcurrentHashMap<String, Job>()
     private val notificationBurst = BurstLimiter()
+    private val chargerWatch = ChargerWatch()
+    private val lastDescriptorAt = ConcurrentHashMap<String, Long>()
+    private val lastWakeAt = ConcurrentHashMap<String, Long>()
     private val syncing = Mutex()
     private val measuring = Mutex()
     private var watchdogJob: Job? = null
@@ -86,6 +90,7 @@ class RingService : Service() {
         }
         startForegroundNotification()
         publishRings()
+        scope.launch { restoreCaseHistory() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -158,6 +163,7 @@ class RingService : Service() {
                     updateRing(address) { it.copy(info = info) }
                 }
                 startIdleLoop(address)
+                scope.launch { wakeTelemetry(address) }
             }
             connected
         }
@@ -181,21 +187,7 @@ class RingService : Service() {
                 when (frame[0].toInt() and 0xff) {
                     Opcodes.RESP_HEARTBEAT -> client.write(Opcodes.HEARTBEAT_ACK)
                     Opcodes.RESP_DESCRIPTOR_QUERY, Opcodes.RESP_DESCRIPTOR_FETCH ->
-                        Descriptor.parse(frame)?.let { d ->
-                            repo.sinkFor(address).onDescriptor(d)
-                            val charging = repo.isCharging(address)
-                            updateRing(address) {
-                                it.copy(
-                                    battery = d.batteryPercent,
-                                    onCharger = charging,
-                                    worn = d.looksWorn,
-                                    skinTemp = d.skinTempA,
-                                    caseBattery = d.caseBatteryPercent,
-                                    caseCharging = d.caseCharging,
-                                )
-                            }
-                            checkBattery(address, d.batteryPercent, charging)
-                        }
+                        Descriptor.parse(frame)?.let { handleDescriptor(address, it) }
                 }
             }
         }
@@ -220,28 +212,207 @@ class RingService : Service() {
         settings.setLowBatteryWarned(address, true)
         val name = settings.rings.firstOrNull { it.address == address }?.shortName ?: address
         L.i("low battery on $name: $percent%")
-        notifyLowBattery(name, percent)
+        notifyLowBattery(address, name, percent)
     }
 
-    private fun notifyLowBattery(ringName: String, percent: Int) {
+    private fun notifyLowBattery(address: String, ringName: String, percent: Int) {
+        // In the two-ring routine the useful thing to say is which ring to put on instead.
+        val spare = state.value.rings.firstOrNull {
+            it.address != address && it.connected && (it.battery ?: 0) >= SWAP_READY_PERCENT
+        }
+        val text = if (spare != null) {
+            "Swap to ${spare.shortName} — it is at ${spare.battery}%."
+        } else {
+            "Charge it soon — a flat ring records nothing, and that gap cannot be recovered."
+        }
+        postRingNotice(KIND_LOW_BATTERY, address, "$ringName is at $percent%", text)
+    }
+
+    /**
+     * Follow the charging case through the ring docked in it.
+     *
+     * The case has no radio; a docked ring reports its charge in descriptor byte 17. That is all
+     * the "connection to the charger" there can be, so this is where it is turned into something
+     * useful: remembering the case once the ring is out, and saying when the spare is ready or the
+     * case is about to stop being able to charge it.
+     */
+    private fun watchCharger(address: String, d: Descriptor, charging: Boolean) {
+        val casePercent = d.caseBatteryPercent
+        if (casePercent != null) {
+            updateRing(address) {
+                it.copy(caseLastPercent = casePercent, caseLastSeenAt = System.currentTimeMillis())
+            }
+        }
+        val name = settings.rings.firstOrNull { it.address == address }?.shortName ?: address
+        val events = chargerWatch.update(
+            ChargerWatch.Reading(
+                ringId = address,
+                battery = d.batteryPercent,
+                charging = charging,
+                casePercent = casePercent,
+                casePluggedIn = d.caseCharging,
+            ),
+        )
+        for (event in events) {
+            when (event) {
+                is ChargerWatch.Event.RingCharged -> {
+                    L.i("$name charged to ${event.battery}%")
+                    postRingNotice(KIND_CHARGED, address, "$name is charged", "Ready to swap onto your finger.")
+                }
+                is ChargerWatch.Event.CaseLow -> {
+                    L.i("$name's case is at ${event.casePercent}%")
+                    postRingNotice(
+                        KIND_CASE_LOW,
+                        address,
+                        "$name's charging case is at ${event.casePercent}%",
+                        "Plug the case in — when it runs flat it cannot charge the ring.",
+                    )
+                }
+            }
+        }
+    }
+
+    /** Pre-fill what was last known about each ring's case, so it shows before the ring is docked. */
+    private suspend fun restoreCaseHistory() {
+        for (ring in settings.rings) {
+            val last = runCatching { repo.latestCaseReading(ring.address) }.getOrNull() ?: continue
+            updateRing(ring.address) {
+                it.copy(caseLastPercent = last.caseBattery, caseLastSeenAt = last.recordedAt)
+            }
+        }
+    }
+
+    /**
+     * Post a notice about one ring.
+     *
+     * The id is derived from the kind and the ring with floorMod, so it is never negative and two
+     * rings never overwrite each other's notice — the previous `hashCode() % 100` could do both.
+     */
+    private fun postRingNotice(kind: Int, address: String, title: String, text: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(
                 NotificationChannel(
                     BATTERY_CHANNEL_ID,
-                    "Ring battery",
+                    "Ring battery and charger",
                     NotificationManager.IMPORTANCE_DEFAULT,
                 ),
             )
         }
         val notification = Notification.Builder(this, BATTERY_CHANNEL_ID)
-            .setContentTitle("$ringName is at $percent%")
-            .setContentText("Charge it soon — a flat ring records nothing, and that gap cannot be recovered.")
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setAutoCancel(true)
             .build()
-        runCatching { nm.notify(BATTERY_NOTIFICATION_ID + ringName.hashCode() % 100, notification) }
+        val id = BATTERY_NOTIFICATION_ID + kind * 1000 + Math.floorMod(address.hashCode(), 1000)
+        runCatching { nm.notify(id, notification) }
     }
+
+    /**
+     * Everything that follows from one descriptor, whichever route it arrived by.
+     *
+     * Descriptors come both from the idle loop and in the middle of a sync. They used to take two
+     * paths, and the sync path only stored them — so a reading that arrived during a sync never
+     * reached the battery check or the charger watch.
+     */
+    private suspend fun handleDescriptor(address: String, d: Descriptor) {
+        repo.sinkFor(address).onDescriptor(d)
+        lastDescriptorAt[address] = System.currentTimeMillis()
+        val charging = repo.isCharging(address)
+        updateRing(address) {
+            it.copy(
+                battery = d.batteryPercent,
+                onCharger = charging,
+                worn = d.looksWorn,
+                skinTemp = d.skinTempA,
+                caseBattery = d.caseBatteryPercent,
+                caseCharging = d.caseCharging,
+            )
+        }
+        checkBattery(address, d.batteryPercent, charging)
+        watchCharger(address, d, charging)
+    }
+
+    /** The ring's sink for a sync, with descriptors routed through [handleDescriptor]. */
+    private fun liveSink(address: String): RecordSink {
+        val base = repo.sinkFor(address)
+        return object : RecordSink by base {
+            override suspend fun onDescriptor(descriptor: Descriptor) = handleDescriptor(address, descriptor)
+        }
+    }
+
+    /**
+     * Get the ring reporting its state — battery, temperature, charging, and the case.
+     *
+     * A connection on its own is not enough. On a Gen 3 the ring sends no descriptor at all until a
+     * session is open: a documented observation, and what was seen here, where battery and case
+     * stayed blank after every reconnect until the next sync. That left the charger effectively out
+     * of reach for hours at a time.
+     *
+     * So after connecting this authenticates and asks, trying the two documented state requests in
+     * turn — `d0 00 00` for a `0x10`, then `07 00 00` for a `0x87`. Neither is destructive: history
+     * is only lost when a page is acknowledged, and nothing here acknowledges anything. If the ring
+     * still says nothing, a sync is the one thing known to wake it, so that is the fallback —
+     * outside quiet hours, which exist to leave the night's backlog alone.
+     */
+    private suspend fun wakeTelemetry(address: String) {
+        if (measuring.isLocked) return
+        // At most once per stale period per ring. Without this a ring that never answers would be
+        // woken on every watchdog tick, each failure falling back to a full sync — a sync every
+        // 45 seconds, for as long as it stayed silent.
+        val now = System.currentTimeMillis()
+        val last = lastWakeAt[address]
+        if (last != null && now - last < TELEMETRY_STALE_MS) return
+        lastWakeAt[address] = now
+        // A sync opens its own session, which is all this does; never run alongside one.
+        if (!syncing.tryLock()) return
+        var flowing = false
+        try {
+            val client = clientFor(address)
+            if (!client.isConnected) return
+            idleJobs.remove(address)?.cancelAndJoin()
+            val session = SyncSession(address, client, liveSink(address), clock)
+            if (!session.authenticate()) {
+                L.w("telemetry: authentication failed for $address")
+                return
+            }
+            for ((label, request) in listOf("d0" to Opcodes.STATUS_QUERY, "07" to Opcodes.FETCH)) {
+                client.write(request)
+                val d = awaitDescriptor(client, TELEMETRY_WAIT_MS)
+                if (d != null) {
+                    handleDescriptor(address, d)
+                    L.i("telemetry flowing for $address after $label")
+                    flowing = true
+                    return
+                }
+            }
+            L.w("telemetry: $address sent no state after d0 or 07")
+        } finally {
+            syncing.unlock()
+            startIdleLoop(address)
+            if (!flowing && !settings.isQuietHour(Calendar.getInstance().get(Calendar.HOUR_OF_DAY))) {
+                scope.launch { syncAll(force = true) }
+            }
+        }
+    }
+
+    /** Wait for a descriptor, answering heartbeats meanwhile so the link stays healthy. */
+    private suspend fun awaitDescriptor(client: RingBleClient, timeoutMs: Long): Descriptor? =
+        withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                val frame = client.incoming.receive()
+                if (frame.isEmpty()) continue
+                when (frame[0].toInt() and 0xff) {
+                    Opcodes.RESP_HEARTBEAT -> client.write(Opcodes.HEARTBEAT_ACK)
+                    Opcodes.RESP_DESCRIPTOR_QUERY, Opcodes.RESP_DESCRIPTOR_FETCH ->
+                        Descriptor.parse(frame)?.let { return@withTimeoutOrNull it }
+                }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            null
+        }
 
     private fun startWatchdog() {
         if (watchdogJob?.isActive == true) return
@@ -251,6 +422,14 @@ class RingService : Service() {
                 // A measurement or sync owns the link while it runs, and reconnecting under it
                 // tears the session down — which is exactly how a measurement came back empty.
                 if (measuring.isLocked || syncing.isLocked) continue
+                val now = System.currentTimeMillis()
+                settings.rings.forEach { ring ->
+                    val quietFor = now - (lastDescriptorAt[ring.address] ?: 0L)
+                    if (clientFor(ring.address).isConnected && quietFor > TELEMETRY_STALE_MS) {
+                        L.d("watchdog: no state from ${ring.address} for ${quietFor / 1000}s, waking it")
+                        wakeTelemetry(ring.address)
+                    }
+                }
                 settings.rings.forEach { ring ->
                     val client = clientFor(ring.address)
                     if (!client.isConnected && !client.backgroundConnectArmed) {
@@ -418,7 +597,7 @@ class RingService : Service() {
         val job = idleJobs.remove(ring.address)
         job?.cancelAndJoin()
         return try {
-            val session = SyncSession(ring.address, client, repo.sinkFor(ring.address), clock)
+            val session = SyncSession(ring.address, client, liveSink(ring.address), clock)
             if (!session.authenticate()) {
                 L.e("auth failed for ${ring.shortName}")
                 return 0
@@ -633,7 +812,12 @@ class RingService : Service() {
         val info: DeviceInfo? = null,
         val caseBattery: Int? = null,
         val caseCharging: Boolean = false,
+        /** The case's charge the last time this ring sat in it, kept after the ring is taken out. */
+        val caseLastPercent: Int? = null,
+        val caseLastSeenAt: Long? = null,
     ) {
+        /** In the case right now, as opposed to merely remembered. */
+        val docked: Boolean get() = caseBattery != null
         val shortName: String get() = name.substringAfterLast('-', name)
         val canVibrate: Boolean get() = Ring(address, name).canVibrate
     }
@@ -674,6 +858,21 @@ class RingService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val BATTERY_CHANNEL_ID = "ring_battery"
         private const val BATTERY_NOTIFICATION_ID = 100
+        private const val KIND_LOW_BATTERY = 1
+        private const val KIND_CHARGED = 2
+        private const val KIND_CASE_LOW = 3
+
+        /** A spare at least this full is worth suggesting as the one to swap to. */
+        private const val SWAP_READY_PERCENT = 80
+
+        /** How long to wait for the ring to answer a state request. */
+        private const val TELEMETRY_WAIT_MS = 6_000L
+
+        /**
+         * Connected but silent for this long means the ring has stopped reporting. Descriptors
+         * normally come every 30-60 s, so this is several missed ones, not one late one.
+         */
+        private const val TELEMETRY_STALE_MS = 10 * 60_000L
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
         private const val STALE_BUZZ_MS = 15_000L
         private const val WATCHDOG_INTERVAL_MS = 45_000L
