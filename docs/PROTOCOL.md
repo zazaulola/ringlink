@@ -111,8 +111,14 @@ captures and the vendor app's two case fields, `chargingCasePower` and `charging
 
 **State only flows inside a session.** On a Gen 3 the ring sends no descriptor at all after a bare
 connection — not on request, not spontaneously — until a session is open. RingLink therefore
-authenticates after every connect and asks with `d0 00 00`, then `07 00 00`, falling back to a sync
+authenticates after every connect and asks with `07 00 00`, then `d0 00 00`, falling back to a sync
 if neither gets an answer. Neither request is destructive; only acknowledging a history page is.
+
+Measured on a Gen 3 (FR05.010 and again on FR05.012): after authentication `d0 00 00` drew no answer
+in 6 s, while `07 00 00` returned a `0x87` descriptor within a second — with no sync session open —
+and descriptors then kept arriving every one to two minutes for as long as the link held. So it is
+`07`, not a full sync, that wakes a Gen 3's telemetry. `d0` is kept second because other firmware
+is documented to answer it.
 
 **`0x10` / `0x87` descriptor — 19 bytes**, streamed every 30–60 s with no sync session needed:
 battery % at 1, state at 2 (`0x04` = charging), steps `u16` at 4, two skin-temperature channels in

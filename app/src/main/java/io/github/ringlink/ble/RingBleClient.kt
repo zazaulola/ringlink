@@ -59,6 +59,13 @@ class RingBleClient(private val context: Context) : RingTransport {
 
     var onConnectionChange: ((Boolean) -> Unit)? = null
 
+    /**
+     * Called once notifications are enabled on a new connection — the point from which the ring
+     * can actually be talked to. Fires for a background connect as well as a direct one, which is
+     * the point: a background connect lands with nobody awaiting it.
+     */
+    var onReady: (() -> Unit)? = null
+
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
@@ -96,6 +103,7 @@ class RingBleClient(private val context: Context) : RingTransport {
             val ok = status == BluetoothGatt.GATT_SUCCESS
             L.i("notifications enabled=$ok")
             if (!servicesReady.isCompleted) servicesReady.complete(ok)
+            if (ok) onReady?.invoke()
         }
 
         override fun onCharacteristicRead(

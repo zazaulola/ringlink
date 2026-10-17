@@ -65,6 +65,7 @@ class RingService : Service() {
     private val chargerWatch = ChargerWatch()
     private val lastDescriptorAt = ConcurrentHashMap<String, Long>()
     private val lastWakeAt = ConcurrentHashMap<String, Long>()
+    @Volatile private var lastFallbackSyncAt = 0L
     private val syncing = Mutex()
     private val measuring = Mutex()
     private var watchdogJob: Job? = null
@@ -137,6 +138,7 @@ class RingService : Service() {
                     updateRing(address) { it.copy(connected = up) }
                     if (up) startIdleLoop(address) else idleJobs.remove(address)?.cancel()
                 }
+                onReady = { scope.launch { onRingReady(address) } }
             }
         }
 
@@ -155,16 +157,8 @@ class RingService : Service() {
             val connected = client.connect(address)
             L.i("connect $address -> $connected")
             updateRing(address) { it.copy(connected = connected) }
-            if (connected) {
-                // Read the ring's own identity once per connection: standard GATT, and the only
-                // trustworthy source for generation and firmware.
-                runCatching { client.readDeviceInfo() }.getOrNull()?.let { info ->
-                    L.i("$address is ${info.summary()}")
-                    updateRing(address) { it.copy(info = info) }
-                }
-                startIdleLoop(address)
-                scope.launch { wakeTelemetry(address) }
-            }
+            // Identity, the idle loop and waking the ring's telemetry happen in onRingReady, which
+            // runs for every connection — including background connects nobody is awaiting.
             connected
         }
 
@@ -335,6 +329,28 @@ class RingService : Service() {
         watchCharger(address, d, charging)
     }
 
+    /**
+     * Everything a fresh connection needs, however it came about.
+     *
+     * This used to run only after a direct connect. A ring that came back through the background
+     * connect — most of the time, since the ring advertises only in short windows — got the idle
+     * loop and nothing else, so its battery, temperature and case stayed blank until the watchdog
+     * noticed the silence.
+     */
+    private suspend fun onRingReady(address: String) {
+        val client = clientFor(address)
+        // Standard GATT, and the only trustworthy source for generation and firmware.
+        runCatching { client.readDeviceInfo() }.getOrNull()?.let { info ->
+            L.i("$address is ${info.summary()}")
+            updateRing(address) { it.copy(info = info) }
+        }
+        startIdleLoop(address)
+        // A new connection deserves its first wake straight away; the rate limit is there to stop
+        // repeated wakes of one silent connection, not to delay the first one after a reconnect.
+        lastWakeAt.remove(address)
+        wakeTelemetry(address)
+    }
+
     /** The ring's sink for a sync, with descriptors routed through [handleDescriptor]. */
     private fun liveSink(address: String): RecordSink {
         val base = repo.sinkFor(address)
@@ -352,7 +368,7 @@ class RingService : Service() {
      * of reach for hours at a time.
      *
      * So after connecting this authenticates and asks, trying the two documented state requests in
-     * turn — `d0 00 00` for a `0x10`, then `07 00 00` for a `0x87`. Neither is destructive: history
+     * turn — `07 00 00` for a `0x87`, then `d0 00 00` for a `0x10`. Neither is destructive: history
      * is only lost when a page is acknowledged, and nothing here acknowledges anything. If the ring
      * still says nothing, a sync is the one thing known to wake it, so that is the fallback —
      * outside quiet hours, which exist to leave the night's backlog alone.
@@ -378,7 +394,10 @@ class RingService : Service() {
                 L.w("telemetry: authentication failed for $address")
                 return
             }
-            for ((label, request) in listOf("d0" to Opcodes.STATUS_QUERY, "07" to Opcodes.FETCH)) {
+            // 07 first: measured on a Gen 3 (FR05.010), d0 drew no answer in 6 s while 07 brought a
+            // descriptor within a second. d0 stays as the fallback, being what other firmware is
+            // documented to answer.
+            for ((label, request) in listOf("07" to Opcodes.FETCH, "d0" to Opcodes.STATUS_QUERY)) {
                 client.write(request)
                 val d = awaitDescriptor(client, TELEMETRY_WAIT_MS)
                 if (d != null) {
@@ -388,11 +407,18 @@ class RingService : Service() {
                     return
                 }
             }
-            L.w("telemetry: $address sent no state after d0 or 07")
+            L.w("telemetry: $address sent no state after 07 or d0")
         } finally {
             syncing.unlock()
             startIdleLoop(address)
-            if (!flowing && !settings.isQuietHour(Calendar.getInstance().get(Calendar.HOUR_OF_DAY))) {
+            val nowMs = System.currentTimeMillis()
+            if (!flowing &&
+                !settings.isQuietHour(Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) &&
+                nowMs - lastFallbackSyncAt > FALLBACK_SYNC_MIN_GAP_MS
+            ) {
+                // Bounded separately from the wake: a link that keeps dropping and coming back must
+                // not turn into a sync on every reconnect.
+                lastFallbackSyncAt = nowMs
                 scope.launch { syncAll(force = true) }
             }
         }
@@ -424,9 +450,11 @@ class RingService : Service() {
                 if (measuring.isLocked || syncing.isLocked) continue
                 val now = System.currentTimeMillis()
                 settings.rings.forEach { ring ->
-                    val quietFor = now - (lastDescriptorAt[ring.address] ?: 0L)
+                    val lastState = lastDescriptorAt[ring.address]
+                    val quietFor = if (lastState == null) Long.MAX_VALUE else now - lastState
                     if (clientFor(ring.address).isConnected && quietFor > TELEMETRY_STALE_MS) {
-                        L.d("watchdog: no state from ${ring.address} for ${quietFor / 1000}s, waking it")
+                        val since = if (lastState == null) "since connecting" else "for ${quietFor / 1000}s"
+                        L.d("watchdog: no state from ${ring.address} $since, waking it")
                         wakeTelemetry(ring.address)
                     }
                 }
@@ -873,6 +901,9 @@ class RingService : Service() {
          * normally come every 30-60 s, so this is several missed ones, not one late one.
          */
         private const val TELEMETRY_STALE_MS = 10 * 60_000L
+
+        /** A sync used only to wake a silent ring, at most this often. */
+        private const val FALLBACK_SYNC_MIN_GAP_MS = 30 * 60_000L
         private const val MIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
         private const val STALE_BUZZ_MS = 15_000L
         private const val WATCHDOG_INTERVAL_MS = 45_000L
