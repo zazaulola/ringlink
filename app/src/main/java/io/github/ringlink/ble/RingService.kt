@@ -612,7 +612,8 @@ class RingService : Service() {
                 if (settings.exportToHealthConnect) {
                     val exported = exporter.exportAllPending(clock)
                     val sleep = exporter.exportSleep(clock)
-                    L.i("health connect export: $exported rows, $sleep sleep sessions")
+                    val steps = exporter.exportSteps()
+                    L.i("health connect export: $exported rows, $sleep sleep sessions, $steps step quarters")
                 }
             } finally {
                 state.value = state.value.copy(syncing = false)
@@ -721,14 +722,28 @@ class RingService : Service() {
         state.value = state.value.copy(status = "Connected")
     }
 
+    /**
+     * Rewrite everything this app has put into Health Connect.
+     *
+     * Sleep and steps are deleted first and recomputed over all of history: both are derived
+     * rather than stored, and older versions derived them on a wrong basis. Recomputing only a
+     * recent window — as this once did for sleep — would have deleted every older night outright.
+     */
     private suspend fun reExport() {
         state.value = state.value.copy(status = "Re-exporting…")
         if (exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
+        if (exporter.deleteExportedSteps()) L.i("removed previously exported steps")
         val n = runCatching { exporter.reExportAll(clock) }
             .onFailure { L.e("re-export failed", it) }
             .getOrDefault(0)
-        L.i("re-exported $n rows")
-        state.value = state.value.copy(status = "Re-exported $n records")
+        val sleep = runCatching { exporter.exportSleep(clock, windowSeconds = null) }
+            .onFailure { L.e("sleep re-export failed", it) }
+            .getOrDefault(0)
+        val steps = runCatching { exporter.exportSteps(windowMillis = null) }
+            .onFailure { L.e("steps re-export failed", it) }
+            .getOrDefault(0)
+        L.i("re-exported $n rows, $sleep sleep sessions, $steps step quarters")
+        state.value = state.value.copy(status = "Re-exported $n records, $sleep nights, $steps step quarters")
     }
 
     // --- state ------------------------------------------------------------------------------------

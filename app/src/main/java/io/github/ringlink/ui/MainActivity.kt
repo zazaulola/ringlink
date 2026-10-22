@@ -380,12 +380,12 @@ private fun TodayCard(vm: MainViewModel) {
         resting?.let {
             Text("Resting heart rate  $it bpm", style = MaterialTheme.typography.bodyMedium)
         }
-        if (steps == 0) {
-            Text(
-                "Nothing logged yet today — sync the ring to pull what it has recorded.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
+        Text(
+            "Counted while the phone is connected to the ring: the ring tallies steps a quarter-hour " +
+                "at a time and keeps no step history its sync hands over, so a quarter nobody heard " +
+                "cannot be recovered later.",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 

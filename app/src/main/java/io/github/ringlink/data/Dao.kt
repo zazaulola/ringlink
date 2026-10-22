@@ -125,10 +125,6 @@ interface RingDao {
     @Query("SELECT * FROM epochs WHERE ringId = :ringId AND counter >= :since ORDER BY counter")
     suspend fun epochsForRingSince(ringId: String, since: Long): List<EpochEntity>
 
-    /** Steps the ring itself logged in a counter range — the sport channel, not descriptor deltas. */
-    @Query("SELECT COALESCE(SUM(steps), 0) FROM sport WHERE counter BETWEEN :from AND :to")
-    fun stepsBetween(from: Long, to: Long): Flow<Int>
-
     /**
      * Resting heart rate: the top of the lowest [sampleCount] still readings.
      *
@@ -161,6 +157,9 @@ interface RingDao {
             "ORDER BY recordedAt DESC LIMIT 1",
     )
     suspend fun latestCaseReading(ringId: String): DeviceStateEntity?
+
+    @Query("SELECT DISTINCT ringId FROM device_state")
+    suspend fun deviceStateRings(): List<String>
 
     @Query("SELECT DISTINCT ringId FROM epochs")
     suspend fun knownRings(): List<String>

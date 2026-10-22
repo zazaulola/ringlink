@@ -3,6 +3,8 @@ package io.github.ringlink.health
 import android.content.Context
 import androidx.health.connect.client.records.Record
 import io.github.ringlink.data.DeviceStateEntity
+import io.github.ringlink.data.StepSample
+import io.github.ringlink.data.StepQuarters
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
@@ -75,7 +77,6 @@ class HealthExporter(
 
         val records = ArrayList<Record>()
         records += writer.mapEpochs(epochs, clock)
-        records += writer.mapSteps(states)
         records += temperatureRecords(states)
         records += writer.mapSport(sport, clock)
 
@@ -110,9 +111,15 @@ class HealthExporter(
      * sleep needs the surrounding day for context. Sessions carry a deterministic id, so re-running
      * refines an estimate in place instead of stacking duplicates.
      */
-    suspend fun exportSleep(clock: RingClock): Int {
+    suspend fun exportSleep(clock: RingClock, windowSeconds: Long? = SLEEP_WINDOW_SECONDS): Int {
         if (!settings.estimateSleep || !hasPermissions()) return 0
-        val since = clock.cursorForNow(System.currentTimeMillis() / 1000) - SLEEP_WINDOW_SECONDS
+        // A null window means all of history — what a re-export needs, having just deleted every
+        // session it wrote. Rewriting only the last week would have lost every older night.
+        val since = if (windowSeconds == null) {
+            0L
+        } else {
+            clock.cursorForNow(System.currentTimeMillis() / 1000) - windowSeconds
+        }
         var written = 0
         for (ringId in repo.knownRings()) {
             val epochs = repo.epochsForRingSince(ringId, since)
@@ -128,6 +135,36 @@ class HealthExporter(
         }
         return written
     }
+
+    /**
+     * Steps for every ring, one record per completed quarter-hour.
+     *
+     * Recomputed over a window rather than from rows waiting to be exported, because a quarter's
+     * count is a property of all its readings together. Only finished quarters are written; the
+     * current one is still counting.
+     */
+    suspend fun exportSteps(windowMillis: Long? = STEPS_WINDOW_MS): Int {
+        if (!settings.exportToHealthConnect || !hasPermissions()) return 0
+        val now = System.currentTimeMillis()
+        val since = if (windowMillis == null) 0L else now - windowMillis
+        var written = 0
+        for (ringId in repo.deviceStateRings()) {
+            val samples = repo.deviceStatesSince(ringId, since).map { StepSample(it.recordedAt, it.steps) }
+            val finished = StepQuarters.quarters(samples).filter { it.endMillis <= now }
+            val records = writer.mapQuarterSteps(ringId, finished)
+            if (records.isEmpty()) continue
+            records.chunked(BATCH).forEach { writer.insert(it) }
+            written += records.size
+        }
+        return written
+    }
+
+    /** Remove every steps record written so far — older versions wrote them on a wrong basis. */
+    suspend fun deleteExportedSteps(): Boolean = runCatching {
+        if (!hasPermissions()) return false
+        writer.deleteAllSteps()
+        true
+    }.getOrDefault(false)
 
     /**
      * Sleep STAGES are deliberately NOT exported.
@@ -155,6 +192,8 @@ class HealthExporter(
         /** Anything outside this is not a finger. */
         val PLAUSIBLE_SKIN_TEMP = 20.0..42.0
         const val SLEEP_WINDOW_SECONDS = 7 * 24 * 3600L
+        /** Quarters change only while they are current; two days covers any late sync. */
+        const val STEPS_WINDOW_MS = 2 * 24 * 3600_000L
         /** Two missing epochs still counts as the same night. */
         const val MAX_GAP_SECONDS = 450L
         const val MIN_SESSION_SECONDS = 30 * 60L

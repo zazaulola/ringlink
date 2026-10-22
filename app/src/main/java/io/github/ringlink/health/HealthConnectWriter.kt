@@ -19,6 +19,7 @@ import androidx.health.connect.client.units.Percentage
 import androidx.health.connect.client.units.Temperature
 import androidx.health.connect.client.units.TemperatureDelta
 import io.github.ringlink.data.DeviceStateEntity
+import io.github.ringlink.data.QuarterSteps
 import java.util.concurrent.ConcurrentHashMap
 import io.github.ringlink.data.Settings
 import io.github.ringlink.data.RingNames
@@ -199,26 +200,34 @@ class HealthConnectWriter(private val context: Context) {
         return out
     }
 
-    fun mapSteps(rows: List<DeviceStateEntity>): List<Record> {
-        val out = ArrayList<Record>()
-        for (i in 1 until rows.size) {
-            val prev = rows[i - 1]
-            val cur = rows[i]
-            val delta = cur.steps - prev.steps
-            if (delta <= 0) continue
-            val start = Instant.ofEpochMilli(prev.recordedAt)
-            val end = Instant.ofEpochMilli(cur.recordedAt)
-            if (!end.isAfter(start)) continue
-            out += StepsRecord(
+    /**
+     * Steps as one record per ring per quarter-hour.
+     *
+     * Replaces differences between consecutive descriptor readings, which lost the steps walked
+     * after each quarter's reset until the next reading, and — fed a batch mixing two rings —
+     * subtracted one ring's count from the other's. A quarter's record carries a deterministic id,
+     * so writing it again replaces it rather than adding to it.
+     */
+    fun mapQuarterSteps(ringId: String, quarters: List<QuarterSteps>): List<Record> =
+        quarters.filter { it.steps > 0 }.map { q ->
+            val start = Instant.ofEpochMilli(q.startMillis)
+            val end = Instant.ofEpochMilli(q.endMillis)
+            StepsRecord(
                 startTime = start,
                 startZoneOffset = zoneFor(start),
                 endTime = end,
                 endZoneOffset = zoneFor(end),
-                count = delta.toLong(),
-                metadata = meta("steps-${cur.ringId}-${cur.recordedAt}", cur.ringId),
+                count = q.steps.toLong(),
+                metadata = meta("steps-q-$ringId-${q.startMillis}", ringId),
             )
         }
-        return out
+
+    /** Remove every steps record this app wrote; others' steps are untouched. */
+    suspend fun deleteAllSteps() {
+        client().deleteRecords(
+            StepsRecord::class,
+            TimeRangeFilter.between(Instant.ofEpochSecond(0), Instant.now().plusSeconds(86_400)),
+        )
     }
 
     /**
@@ -306,11 +315,11 @@ class HealthConnectWriter(private val context: Context) {
     private fun meta(clientRecordId: String, ringId: String) = Metadata.autoRecorded(
         device = deviceFor(ringId),
         clientRecordId = clientRecordId,
-        clientRecordVersion = exportVersion,
+        // Stamped per write: Health Connect keeps the higher version, so a record written again
+        // later — a corrected quarter, a re-export — always replaces the earlier copy.
+        clientRecordVersion = System.currentTimeMillis(),
     )
 
-    /** One version stamp per writer instance, so a whole re-export shares it. */
-    private val exportVersion: Long = System.currentTimeMillis()
 
     /** Written explicitly so readers can reconstruct local civil time for backfilled history. */
     private fun zoneFor(instant: Instant) = ZoneId.systemDefault().rules.getOffset(instant)
