@@ -14,6 +14,9 @@ import io.github.ringlink.ble.RingService
 import io.github.ringlink.L
 import io.github.ringlink.data.CsvExport
 import io.github.ringlink.data.Ring
+import io.github.ringlink.data.WornSpan
+import io.github.ringlink.data.RingNames
+import io.github.ringlink.data.Coverage
 import java.util.Calendar
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.RingRepository
@@ -109,12 +112,75 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .flatMapLatest { repo.deviceStatesSinceFlow(System.currentTimeMillis() - it.seconds * 1000) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val summary: StateFlow<Summary?> = window
-        .flatMapLatest { repo.summarySince(cursorFor(it)) }
+    fun selectWindow(w: HistoryWindow) { window.value = w }
+
+    private val names = RingNames(app, settings)
+
+    /** Name for any ring that has history, configured or not. */
+    fun ringOf(address: String): Ring = names.ring(address)
+
+    /** Which ring the History tab is showing; null for all of them. */
+    private val ringFilter = MutableStateFlow<String?>(null)
+    val selectedRing: StateFlow<String?> = ringFilter
+    fun selectRing(address: String?) { ringFilter.value = address }
+
+    /** History for the chosen ring, or for every ring. */
+    val visibleHistory: StateFlow<List<EpochEntity>> = combine(history, ringFilter) { rows, ring ->
+        if (ring == null) rows else rows.filter { it.ringId == ring }
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Which ring was on the finger, and when, across the selected window.
+     *
+     * Computed over every ring regardless of the filter, since its whole point is to show how the
+     * window divides between them.
+     */
+    val coverage: StateFlow<List<WornSpan>> = history
+        .map { Coverage.spans(it) }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Rings that were actually worn within the window, for the filter. */
+    val ringsInWindow: StateFlow<List<Ring>> = coverage
+        .map { spans -> spans.map { it.ringId }.distinct().map { names.ring(it) } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** The window as wall-clock seconds, for drawing the coverage strip on the same axis. */
+    fun windowBounds(): Pair<Long, Long> {
+        val now = System.currentTimeMillis() / 1000
+        return (now - window.value.seconds) to now
+    }
+
+    /**
+     * Summary of what is on screen.
+     *
+     * Computed here rather than in SQL so that it follows the ring filter: a summary across both
+     * rings while the charts show one would describe something the user is not looking at.
+     */
+    val summary: StateFlow<Summary?> = visibleHistory
+        .map { rows -> summarise(rows) }
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    fun selectWindow(w: HistoryWindow) { window.value = w }
+    private fun summarise(rows: List<EpochEntity>): Summary? {
+        if (rows.isEmpty()) return null
+        val hr = rows.mapNotNull { it.heartRate }
+        val spo2 = rows.mapNotNull { it.spo2 }
+        return Summary(
+            firstCounter = rows.minOf { it.counter },
+            lastCounter = rows.maxOf { it.counter },
+            samples = rows.size,
+            avgHeartRate = hr.takeIf { it.isNotEmpty() }?.average(),
+            minHeartRate = hr.minOrNull(),
+            maxHeartRate = hr.maxOrNull(),
+            avgHrv = rows.mapNotNull { it.hrvRmssd }.takeIf { it.isNotEmpty() }?.average(),
+            avgSpo2 = spo2.takeIf { it.isNotEmpty() }?.average(),
+            minSpo2 = spo2.minOrNull(),
+            avgRespiratoryRate = rows.mapNotNull { it.respiratoryRate }.takeIf { it.isNotEmpty() }?.average(),
+        )
+    }
 
     /**
      * Midnight today, in the ring's counter space.
@@ -147,6 +213,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A detected night with the vitals measured during it — what a sleep screen is expected to show. */
     data class Night(
+        /** The ring that recorded it — the one on the finger that night. */
+        val ringId: String,
         val startUnix: Long,
         val endUnix: Long,
         val averageHeartRate: Int?,
@@ -164,31 +232,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * depend on an export having succeeded — and so turning the estimate off makes it disappear from
      * both places at once.
      */
-    val nights: StateFlow<List<Night>> = combine(window, history) { _, rows -> rows }
-        .map { rows ->
+    val nights: StateFlow<List<Night>> = combine(history, ringFilter) { rows, ring -> rows to ring }
+        .map { (rows, ring) ->
             if (!settings.estimateSleep) return@map emptyList()
-            val periods = SleepDetector.detect(
-                rows.map { SleepInput(it.counter, it.heartRate, it.motionSum) },
-            )
-            periods.map { period ->
-                val inside = rows.filter { it.counter in period.startCounter..period.endCounter }
-                val hr = inside.mapNotNull { it.heartRate }
-                val spo2 = inside.mapNotNull { it.spo2 }
-                val hrv = inside.mapNotNull { it.hrvRmssd }
-                Night(
-                    startUnix = clock.toUnixSeconds(period.startCounter),
-                    endUnix = clock.toUnixSeconds(period.endCounter),
-                    averageHeartRate = hr.averageOrNull(),
-                    lowestHeartRate = hr.minOrNull(),
-                    averageSpo2 = spo2.averageOrNull(),
-                    averageHrv = hrv.averageOrNull(),
-                )
-            }.sortedByDescending { it.startUnix }
+            // One ring at a time. Run over a mix, the detector would read two sensors interleaved
+            // as one restless person and compare each against a baseline taken from both.
+            rows.groupBy { it.ringId }
+                .filterKeys { ring == null || it == ring }
+                .flatMap { (ringId, own) -> nightsFor(ringId, own) }
+                .sortedByDescending { it.startUnix }
         }
         // Off the main thread: detection walks a whole window of readings, and a month of them is
         // not something to run where it can stall the UI.
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private fun nightsFor(ringId: String, rows: List<EpochEntity>): List<Night> {
+        val periods = SleepDetector.detect(rows.map { SleepInput(it.counter, it.heartRate, it.motionSum) })
+        return periods.map { period ->
+            val inside = rows.filter { it.counter in period.startCounter..period.endCounter }
+            val hr = inside.mapNotNull { it.heartRate }
+            Night(
+                ringId = ringId,
+                startUnix = clock.toUnixSeconds(period.startCounter),
+                endUnix = clock.toUnixSeconds(period.endCounter),
+                averageHeartRate = hr.averageOrNull(),
+                lowestHeartRate = hr.minOrNull(),
+                averageSpo2 = inside.mapNotNull { it.spo2 }.averageOrNull(),
+                averageHrv = inside.mapNotNull { it.hrvRmssd }.averageOrNull(),
+            )
+        }
+    }
 
     /** Convert a stored counter to a wall-clock instant for charting. */
     fun timeOf(counter: Long): Long = clock.toUnixSeconds(counter)

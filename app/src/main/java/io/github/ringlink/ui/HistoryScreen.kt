@@ -1,5 +1,6 @@
 package io.github.ringlink.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import io.github.ringlink.data.Coverage
 import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.EpochEntity
 import java.text.SimpleDateFormat
@@ -23,7 +31,9 @@ import java.util.Locale
 
 @Composable
 fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
-    val rows by vm.history.collectAsState()
+    val rows by vm.visibleHistory.collectAsState()
+    val rings by vm.ringsInWindow.collectAsState()
+    val selectedRing by vm.selectedRing.collectAsState()
     val states by vm.deviceStates.collectAsState()
     val summary by vm.summary.collectAsState()
     val window by vm.selectedWindow.collectAsState()
@@ -39,6 +49,25 @@ fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
                 )
             }
         }
+
+        if (rings.size > 1) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = selectedRing == null,
+                    onClick = { vm.selectRing(null) },
+                    label = { Text("All rings") },
+                )
+                rings.forEach { ring ->
+                    FilterChip(
+                        selected = selectedRing == ring.address,
+                        onClick = { vm.selectRing(ring.address) },
+                        label = { Text(ring.shortName) },
+                    )
+                }
+            }
+        }
+
+        SourcesCard(vm)
 
         if (rows.isEmpty()) {
             Card(Modifier.fillMaxWidth()) {
@@ -131,6 +160,81 @@ fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
 }
 
 /**
+ * Which ring recorded which stretch of the window.
+ *
+ * Both rings write records all the time, worn or not, so the honest answer is the one the pulse
+ * gives: a ring is the source only where it measured one. Drawn on the window's own time axis, one
+ * strip per ring, with the most recent stretches spelled out underneath.
+ */
+@Composable
+private fun SourcesCard(vm: MainViewModel) {
+    val spans by vm.coverage.collectAsState()
+    if (spans.isEmpty()) return
+    val ringIds = spans.map { it.ringId }.distinct().sorted()
+    val colorOf = { id: String -> ChartColors.rings[ringIds.indexOf(id) % ChartColors.rings.size] }
+    val (from, to) = vm.windowBounds()
+    val totals = Coverage.totals(spans)
+    val format = remember { SimpleDateFormat("EEE d MMM HH:mm", Locale.getDefault()) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Which ring recorded what", style = MaterialTheme.typography.titleMedium)
+
+            ringIds.forEach { id ->
+                val ring = vm.ringOf(id)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(ring.shortName, Modifier.width(56.dp), style = MaterialTheme.typography.bodyMedium)
+                    Canvas(
+                        Modifier
+                            .weight(1f)
+                            .height(14.dp),
+                    ) {
+                        val span = (to - from).coerceAtLeast(1).toFloat()
+                        drawRect(color = Color.Gray.copy(alpha = 0.15f), size = size)
+                        spans.filter { it.ringId == id }.forEach { s ->
+                            val start = vm.timeOf(s.startCounter).coerceIn(from, to)
+                            val end = vm.timeOf(s.endCounter).coerceIn(from, to)
+                            if (end <= start) return@forEach
+                            val x0 = (start - from) / span * size.width
+                            val x1 = (end - from) / span * size.width
+                            drawRect(
+                                color = colorOf(id),
+                                topLeft = Offset(x0, 0f),
+                                size = Size((x1 - x0).coerceAtLeast(1.5f), size.height),
+                            )
+                        }
+                    }
+                    Text(
+                        "%d h".format((totals[id] ?: 0L) / 3600),
+                        Modifier.width(52.dp).padding(start = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            spans.sortedByDescending { it.startCounter }.take(RECENT_SPANS).forEach { s ->
+                val ring = vm.ringOf(s.ringId)
+                Text(
+                    "${format.format(Date(vm.timeOf(s.startCounter) * 1000))} – " +
+                        "${format.format(Date(vm.timeOf(s.endCounter) * 1000))}  ·  " +
+                        "${ring.shortName}  ·  %.1f h".format(s.seconds / 3600.0),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colorOf(s.ringId),
+                )
+            }
+
+            Text(
+                "A ring counts as the source only where it measured a pulse. A ring in its case " +
+                    "or on a table still writes empty records, and those are not shown as data.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+private const val RECENT_SPANS = 6
+
+/**
  * Detected nights, with the vitals measured during each.
  *
  * Labelled as an estimate throughout, because it is one: the ring reports no sleep of its own, so
@@ -163,7 +267,10 @@ private fun NightsCard(vm: MainViewModel) {
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Text(day.format(start), style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "${day.format(start)}  ·  ${vm.ringOf(night.ringId).shortName}",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                         Text(
                             "%.1f h · %s–%s".format(night.hours, clock.format(start), clock.format(end)),
                             style = MaterialTheme.typography.bodyMedium,
@@ -226,5 +333,5 @@ private inline fun List<EpochEntity>.points(
     vm: MainViewModel,
     select: (EpochEntity) -> Float?,
 ): List<Point> = mapNotNull { row ->
-    select(row)?.let { Point(vm.timeOf(row.counter), it) }
+    select(row)?.let { Point(vm.timeOf(row.counter), it, source = row.ringId) }
 }

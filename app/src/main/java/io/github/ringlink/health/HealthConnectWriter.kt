@@ -19,6 +19,9 @@ import androidx.health.connect.client.units.Percentage
 import androidx.health.connect.client.units.Temperature
 import androidx.health.connect.client.units.TemperatureDelta
 import io.github.ringlink.data.DeviceStateEntity
+import java.util.concurrent.ConcurrentHashMap
+import io.github.ringlink.data.Settings
+import io.github.ringlink.data.RingNames
 import io.github.ringlink.data.SportEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.protocol.RingClock
@@ -35,11 +38,26 @@ import java.time.ZoneId
  */
 class HealthConnectWriter(private val context: Context) {
 
-    private val ringDevice = Device(
-        manufacturer = "RingConn",
-        model = "Gen 3",
-        type = Device.TYPE_RING,
-    )
+    private val names = RingNames(context, Settings(context))
+    private val devices = ConcurrentHashMap<String, Device>()
+
+    /**
+     * The device a record came from, per ring.
+     *
+     * Every record used to be stamped with one fixed "RingConn Gen 3", so readings from the Gen 2
+     * were labelled as a Gen 3 and nothing in Health Connect could tell the two rings apart. Each
+     * ring now appears as itself — "Gen 3 · F749", "Gen 2 · CEF0" — so the source of every reading
+     * can be seen there too.
+     */
+    private fun deviceFor(ringId: String): Device = devices.getOrPut(ringId) {
+        val ring = names.ring(ringId)
+        Device(
+            manufacturer = "RingConn",
+            model = listOfNotNull(ring.generation?.let { "Gen $it" }, ring.shortName).joinToString(" · "),
+            type = Device.TYPE_RING,
+        )
+    }
+
 
     val permissions: Set<String> = setOf(
         HealthPermission.getWritePermission(HeartRateRecord::class),
@@ -101,7 +119,7 @@ class HealthConnectWriter(private val context: Context) {
                     endTime = end,
                     endZoneOffset = zone,
                     samples = listOf(HeartRateRecord.Sample(time = start, beatsPerMinute = hr.toLong())),
-                    metadata = meta(id("hr")),
+                    metadata = meta(id("hr"), row.ringId),
                 )
             }
             row.hrvRmssd?.let { hrv ->
@@ -109,7 +127,7 @@ class HealthConnectWriter(private val context: Context) {
                     time = start,
                     zoneOffset = zone,
                     heartRateVariabilityMillis = hrv.toDouble(),
-                    metadata = meta(id("hrv")),
+                    metadata = meta(id("hrv"), row.ringId),
                 )
             }
             row.spo2?.let { spo2 ->
@@ -117,7 +135,7 @@ class HealthConnectWriter(private val context: Context) {
                     time = start,
                     zoneOffset = zone,
                     percentage = Percentage(spo2.toDouble()),
-                    metadata = meta(id("spo2")),
+                    metadata = meta(id("spo2"), row.ringId),
                 )
             }
             row.respiratoryRate?.let { rr ->
@@ -125,7 +143,7 @@ class HealthConnectWriter(private val context: Context) {
                     time = start,
                     zoneOffset = zone,
                     rate = rr,
-                    metadata = meta(id("rr")),
+                    metadata = meta(id("rr"), row.ringId),
                 )
             }
         }
@@ -164,7 +182,7 @@ class HealthConnectWriter(private val context: Context) {
                     endTime = end,
                     endZoneOffset = zoneFor(end),
                     count = row.steps.toLong(),
-                    metadata = meta("sport-steps-${row.ringId}-${row.counter}"),
+                    metadata = meta("sport-steps-${row.ringId}-${row.counter}", row.ringId),
                 )
             }
             row.heartRate?.let { hr ->
@@ -174,7 +192,7 @@ class HealthConnectWriter(private val context: Context) {
                     endTime = end,
                     endZoneOffset = zoneFor(end),
                     samples = listOf(HeartRateRecord.Sample(time = start, beatsPerMinute = hr.toLong())),
-                    metadata = meta("sport-hr-${row.ringId}-${row.counter}"),
+                    metadata = meta("sport-hr-${row.ringId}-${row.counter}", row.ringId),
                 )
             }
         }
@@ -197,7 +215,7 @@ class HealthConnectWriter(private val context: Context) {
                 endTime = end,
                 endZoneOffset = zoneFor(end),
                 count = delta.toLong(),
-                metadata = meta("steps-${cur.ringId}-${cur.recordedAt}"),
+                metadata = meta("steps-${cur.ringId}-${cur.recordedAt}", cur.ringId),
             )
         }
         return out
@@ -242,7 +260,7 @@ class HealthConnectWriter(private val context: Context) {
                 startZoneOffset = zoneFor(start),
                 endTime = end,
                 endZoneOffset = zoneFor(end),
-                metadata = meta("skintemp-${ordered.first().ringId}-${ordered.first().recordedAt}"),
+                metadata = meta("skintemp-${ordered.first().ringId}-${ordered.first().recordedAt}", ordered.first().ringId),
                 deltas = ordered.map {
                     SkinTemperatureRecord.Delta(
                         time = Instant.ofEpochMilli(it.recordedAt),
@@ -275,7 +293,7 @@ class HealthConnectWriter(private val context: Context) {
             endTime = end,
             endZoneOffset = zoneFor(end),
             title = "Estimated from movement and heart rate",
-            metadata = meta("sleep-$ringId-$startCounter"),
+            metadata = meta("sleep-$ringId-$startCounter", ringId),
         )
     }
 
@@ -285,8 +303,8 @@ class HealthConnectWriter(private val context: Context) {
      * re-export can correct records already written — for instance after a clock correction moved
      * their timestamps. Without a rising version the corrected copy would simply be ignored.
      */
-    private fun meta(clientRecordId: String) = Metadata.autoRecorded(
-        device = ringDevice,
+    private fun meta(clientRecordId: String, ringId: String) = Metadata.autoRecorded(
+        device = deviceFor(ringId),
         clientRecordId = clientRecordId,
         clientRecordVersion = exportVersion,
     )

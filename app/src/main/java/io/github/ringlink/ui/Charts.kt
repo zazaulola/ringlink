@@ -19,7 +19,12 @@ import kotlin.math.max
 import kotlin.math.min
 
 /** One measurement on a chart: a wall-clock instant and a value. */
-data class Point(val timeSeconds: Long, val value: Float)
+data class Point(
+    val timeSeconds: Long,
+    val value: Float,
+    /** The ring this came from. A line is never drawn between readings from different rings. */
+    val source: String? = null,
+)
 
 /**
  * A compact line chart.
@@ -69,12 +74,18 @@ fun Sparkline(
             val path = Path()
             var penDown = false
             var previousTime = 0L
+            var previousSource: String? = null
             for (p in points) {
-                val newSegment = !penDown || (p.timeSeconds - previousTime) > gapSeconds
+                // Two rings are two sensors: joining a reading from one to the next reading from
+                // the other draws a jump neither of them measured.
+                val newSegment = !penDown ||
+                    (p.timeSeconds - previousTime) > gapSeconds ||
+                    p.source != previousSource
                 if (newSegment) path.moveTo(x(p.timeSeconds), y(p.value))
                 else path.lineTo(x(p.timeSeconds), y(p.value))
                 penDown = true
                 previousTime = p.timeSeconds
+                previousSource = p.source
             }
             drawPath(path, color, style = Stroke(width = 2.5f, cap = StrokeCap.Round))
 
@@ -108,6 +119,9 @@ object ChartColors {
     val respiratory = Color(0xFF00796B)
     val temperature = Color(0xFFE65100)
     val battery = Color(0xFF455A64)
+
+    /** One colour per ring, in a fixed order, for the coverage strip. */
+    val rings = listOf(Color(0xFF3949AB), Color(0xFFF4511E), Color(0xFF00897B), Color(0xFF8E24AA))
 }
 
 internal fun clampWindow(value: Long, lo: Long, hi: Long) = min(max(value, lo), hi)
