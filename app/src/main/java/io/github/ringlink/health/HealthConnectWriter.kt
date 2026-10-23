@@ -245,41 +245,47 @@ class HealthConnectWriter(private val context: Context) {
     }
 
     /**
-     * Skin temperature, expressed the way Health Connect wants it: a baseline plus deltas.
+     * Skin temperature for one ring and one finished hour.
      *
-     * The baseline is the wearer's own median rather than a constant — skin temperature depends on
-     * room, blanket and circulation, so only the deviation from a personal norm carries meaning.
+     * One record per hour with an id taken from the ring and the hour, so writing the same hour again
+     * replaces it. The earlier records were cut from whatever batch of rows happened to be waiting,
+     * and named after its first row — so the same readings exported in a different batch, as any
+     * re-export does, landed as a second, overlapping record instead of replacing the first.
+     *
+     * The baseline is the hour's own median, which makes each record complete on its own:
+     * baseline plus delta is the reading.
      */
-    fun mapSkinTemperature(
-        rows: List<DeviceStateEntity>,
-        baselineCelsius: Double,
-    ): List<Record> {
-        if (rows.size < 2) return emptyList()
-        return rows.chunked(TEMPERATURE_CHUNK).mapNotNull { group ->
-            val ordered = group.sortedBy { it.recordedAt }
-            val start = Instant.ofEpochMilli(ordered.first().recordedAt)
-            // The end must sit strictly AFTER the last reading. Health Connect accepts a delta at
-            // exactly startTime but requires every delta to be strictly before endTime, so ending
-            // the record on the last reading's own instant throws — which crashed the whole export,
-            // taking heart rate and steps down with the temperature.
-            val end = Instant.ofEpochMilli(ordered.last().recordedAt).plusSeconds(1)
-            if (!end.isAfter(start)) return@mapNotNull null
-            SkinTemperatureRecord(
-                startTime = start,
-                startZoneOffset = zoneFor(start),
-                endTime = end,
-                endZoneOffset = zoneFor(end),
-                metadata = meta("skintemp-${ordered.first().ringId}-${ordered.first().recordedAt}", ordered.first().ringId),
-                deltas = ordered.map {
-                    SkinTemperatureRecord.Delta(
-                        time = Instant.ofEpochMilli(it.recordedAt),
-                        delta = TemperatureDelta.celsius(it.skinTempA - baselineCelsius),
-                    )
-                },
-                baseline = Temperature.celsius(baselineCelsius),
-                measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_FINGER,
-            )
-        }
+    fun mapSkinTemperatureHour(ringId: String, hourStartMillis: Long, readings: List<DeviceStateEntity>): Record? {
+        if (readings.isEmpty()) return null
+        val ordered = readings.sortedBy { it.recordedAt }
+        val values = ordered.map { it.skinTempA }.sorted()
+        val baseline = values[values.size / 2]
+        val start = Instant.ofEpochMilli(hourStartMillis)
+        // Every reading in the hour is strictly before its end, as Health Connect requires.
+        val end = start.plusMillis(HOUR_MS)
+        return SkinTemperatureRecord(
+            startTime = start,
+            startZoneOffset = zoneFor(start),
+            endTime = end,
+            endZoneOffset = zoneFor(end),
+            metadata = meta("skintemp-h-$ringId-$hourStartMillis", ringId),
+            deltas = ordered.map {
+                SkinTemperatureRecord.Delta(
+                    time = Instant.ofEpochMilli(it.recordedAt),
+                    delta = TemperatureDelta.celsius(it.skinTempA - baseline),
+                )
+            },
+            baseline = Temperature.celsius(baseline),
+            measurementLocation = SkinTemperatureRecord.MEASUREMENT_LOCATION_FINGER,
+        )
+    }
+
+    /** Remove every skin-temperature record this app wrote; others' are untouched. */
+    suspend fun deleteAllSkinTemperature() {
+        client().deleteRecords(
+            SkinTemperatureRecord::class,
+            TimeRangeFilter.between(Instant.ofEpochSecond(0), Instant.now().plusSeconds(86_400)),
+        )
     }
 
     /**
@@ -326,7 +332,7 @@ class HealthConnectWriter(private val context: Context) {
 
     private companion object {
         const val CHUNK = 500
-        const val TEMPERATURE_CHUNK = 120
+        const val HOUR_MS = 3_600_000L
         const val MAX_SPORT_SPAN_SECONDS = 300L
         const val FALLBACK_SPORT_SPAN_SECONDS = 10L
         const val EPOCH_SECONDS = 150L

@@ -103,6 +103,10 @@ class RingService : Service() {
                 scope.launch { buzz(key) }
             }
             ACTION_REEXPORT -> scope.launch { reExport() }
+            ACTION_EXPORT_HISTORY -> {
+                scope.launch { connectAll() }
+                scope.launch { exportHistory() }
+            }
             ACTION_MEASURE -> {
                 val mode = if (intent.getStringExtra(EXTRA_MODE) == MODE_SPO2) {
                     LiveMode.SPO2
@@ -613,7 +617,22 @@ class RingService : Service() {
                     val exported = exporter.exportAllPending(clock)
                     val sleep = exporter.exportSleep(clock)
                     val steps = exporter.exportSteps()
-                    L.i("health connect export: $exported rows, $sleep sleep sessions, $steps step quarters")
+                    val temperature = if (!settings.temperatureHourlyMigrated) {
+                        // Records written by earlier versions carry batch-derived ids and include
+                        // room-temperature readings; the hourly ones would sit on top of them. Once,
+                        // remove them all and rewrite the whole history the new way.
+                        if (exporter.deleteExportedSkinTemperature()) {
+                            L.i("migrating skin temperature to hourly records")
+                            val n = exporter.exportTemperature(windowMillis = null)
+                            settings.temperatureHourlyMigrated = true
+                            n
+                        } else {
+                            exporter.exportTemperature()
+                        }
+                    } else {
+                        exporter.exportTemperature()
+                    }
+                    L.i("health connect export: $exported rows, $sleep sleep sessions, $steps step quarters, $temperature temperature hours")
                 }
             } finally {
                 state.value = state.value.copy(syncing = false)
@@ -731,19 +750,43 @@ class RingService : Service() {
      */
     private suspend fun reExport() {
         state.value = state.value.copy(status = "Re-exporting…")
-        if (exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
-        if (exporter.deleteExportedSteps()) L.i("removed previously exported steps")
         val n = runCatching { exporter.reExportAll(clock) }
             .onFailure { L.e("re-export failed", it) }
             .getOrDefault(0)
-        val sleep = runCatching { exporter.exportSleep(clock, windowSeconds = null) }
-            .onFailure { L.e("sleep re-export failed", it) }
-            .getOrDefault(0)
-        val steps = runCatching { exporter.exportSteps(windowMillis = null) }
-            .onFailure { L.e("steps re-export failed", it) }
-            .getOrDefault(0)
-        L.i("re-exported $n rows, $sleep sleep sessions, $steps step quarters")
+        // Each derived kind is deleted immediately before it is rewritten, under the same gates as
+        // the rewrite, so nothing is ever deleted that is not then written back.
+        val (sleep, steps, temperature) = rewriteDerived(fresh = true)
+        L.i("re-exported $n rows, $sleep sleep sessions, $steps step quarters, $temperature temperature hours")
         state.value = state.value.copy(status = "Re-exported $n records, $sleep nights, $steps step quarters")
+    }
+
+    /**
+     * Write sleep, steps and temperature for the whole history.
+     *
+     * With [fresh], what this app wrote before is removed first — needed when the way a kind is
+     * derived has changed. Without it, records are only added or replaced in place by their ids.
+     */
+    private suspend fun rewriteDerived(fresh: Boolean): Triple<Int, Int, Int> {
+        if (fresh && exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
+        val sleep = runCatching { exporter.exportSleep(clock, windowSeconds = null) }
+            .onFailure { L.e("sleep export failed", it) }.getOrDefault(0)
+        if (fresh && exporter.deleteExportedSteps()) L.i("removed previously exported steps")
+        val steps = runCatching { exporter.exportSteps(windowMillis = null) }
+            .onFailure { L.e("steps export failed", it) }.getOrDefault(0)
+        if (fresh && exporter.deleteExportedSkinTemperature()) L.i("removed previously exported skin temperature")
+        val temperature = runCatching { exporter.exportTemperature(windowMillis = null) }
+            .onFailure { L.e("temperature export failed", it) }.getOrDefault(0)
+        return Triple(sleep, steps, temperature)
+    }
+
+    /** After a restore: everything waiting, plus the derived kinds over all of history. */
+    private suspend fun exportHistory() {
+        state.value = state.value.copy(status = "Writing restored history to Health Connect…")
+        val rows = runCatching { exporter.exportAllPending(clock) }
+            .onFailure { L.e("history export failed", it) }.getOrDefault(0)
+        val (sleep, steps, temperature) = rewriteDerived(fresh = false)
+        L.i("history export: $rows rows, $sleep sleep sessions, $steps step quarters, $temperature temperature hours")
+        state.value = state.value.copy(status = "Restored history written to Health Connect")
     }
 
     // --- state ------------------------------------------------------------------------------------
@@ -891,6 +934,7 @@ class RingService : Service() {
         const val ACTION_BUZZ = "io.github.ringlink.BUZZ"
         const val ACTION_STOP = "io.github.ringlink.STOP"
         const val ACTION_REEXPORT = "io.github.ringlink.REEXPORT"
+        const val ACTION_EXPORT_HISTORY = "io.github.ringlink.EXPORT_HISTORY"
         const val ACTION_MEASURE = "io.github.ringlink.MEASURE"
         const val ACTION_FIND = "io.github.ringlink.FIND"
         const val EXTRA_MODE = "mode"

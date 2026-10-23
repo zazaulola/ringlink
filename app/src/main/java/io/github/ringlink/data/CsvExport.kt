@@ -27,9 +27,10 @@ class CsvExport(private val context: Context, private val dao: RingDao) {
                 out.write("# epoch counters are the ring's own; the anchor used here is ${clock.epoch()}\n\n")
 
                 out.write("section,ring,timestamp,counter,heart_rate,hrv_rmssd,spo2,respiratory_rate,motion,channel,layout\n")
-                var after = Long.MIN_VALUE
+                var afterCounter = Long.MIN_VALUE
+                var afterRing = ""
                 while (true) {
-                    val page = dao.epochsAfter(after, PAGE)
+                    val page = dao.epochsAfter(afterRing, afterCounter, PAGE)
                     if (page.isEmpty()) break
                     for (e in page) {
                         val t = iso.format(Date(clock.toUnixSeconds(e.counter) * 1000))
@@ -40,7 +41,8 @@ class CsvExport(private val context: Context, private val dao: RingDao) {
                         )
                         rows++
                     }
-                    after = page.last().counter
+                    afterCounter = page.last().counter
+                    afterRing = page.last().ringId
                 }
 
                 out.write("\nsection,ring,timestamp,battery_percent,battery_mv,steps,skin_temp_a,skin_temp_b,on_charger,state,case_battery,case_charging\n")

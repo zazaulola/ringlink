@@ -12,6 +12,10 @@ import io.github.ringlink.ble.RingBleClient
 import io.github.ringlink.ble.RingScanner
 import io.github.ringlink.ble.RingService
 import io.github.ringlink.L
+import io.github.ringlink.backup.BackupSettings
+import io.github.ringlink.backup.BackupFolder
+import io.github.ringlink.backup.AutoBackup
+import io.github.ringlink.backup.BackupJobs
 import io.github.ringlink.data.CsvExport
 import io.github.ringlink.data.Ring
 import io.github.ringlink.data.StepSample
@@ -44,6 +48,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -57,6 +62,16 @@ enum class HistoryWindow(val label: String, val seconds: Long) {
     WEEK("7 d", 7 * 24 * 3600),
     MONTH("30 d", 30 * 24 * 3600),
 }
+
+/** Settings and status for automatic backups. Running jobs report through [BackupJobs.state]. */
+data class BackupUi(
+    val autoEnabled: Boolean = false,
+    val folderName: String? = null,
+    val folderReachable: Boolean = true,
+    val keep: Int = BackupSettings.DEFAULT_KEEP,
+    val lastAt: Long = 0,
+    val lastResult: String? = null,
+)
 
 data class UiState(
     val rings: List<Ring> = emptyList(),
@@ -74,6 +89,7 @@ data class UiState(
     val estimateSleep: Boolean = true,
     val stepGoal: Int = 10_000,
     val exportMessage: String? = null,
+    val backup: BackupUi = BackupUi(),
     val watchEnabled: Boolean = false,
     val daysSinceExposure: Long? = null,
     val checkInPending: Boolean = false,
@@ -84,6 +100,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val settings = Settings(app)
     private val watch = WatchSettings(app)
+    // Declared up here because init{} reads it via refresh(); declared further down it was still
+    // null at that point, and the screen crashed on opening.
+    private val backupSettings = BackupSettings(app)
     private val repo = RingRepository(RingDatabase.get(app).dao())
     val exporter = HealthExporter(app, repo, settings)
 
@@ -293,34 +312,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val service: StateFlow<RingService.State> = RingService.observable
 
     init {
-        repo.epochCount().onEach { n -> _ui.value = _ui.value.copy(storedEpochs = n) }.launchIn(viewModelScope)
-        repo.pendingExportCount().onEach { n -> _ui.value = _ui.value.copy(pendingExport = n) }.launchIn(viewModelScope)
+        repo.epochCount().onEach { n -> _ui.update { it.copy(storedEpochs = n) } }.launchIn(viewModelScope)
+        repo.pendingExportCount().onEach { n -> _ui.update { it.copy(pendingExport = n) } }.launchIn(viewModelScope)
         refresh()
     }
 
+    private var refreshJob: kotlinx.coroutines.Job? = null
+
     fun refresh() {
+        refreshBackup()
         val app = getApplication<Application>()
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             val configured = settings.rings
-            _ui.value = _ui.value.copy(
-                rings = configured,
-                // Offer only rings that are not configured yet.
-                candidates = bondedRings().filterNot { c ->
-                    configured.any { it.address.equals(c.address, ignoreCase = true) }
-                },
-                healthConnectAvailable = exporter.isAvailable(),
-                healthConnectGranted = runCatching { exporter.hasPermissions() }.getOrDefault(false),
-                notificationAccess = hasNotificationAccess(app),
-                buzzOnNotifications = settings.buzzOnNotifications,
-                buzzOnCalls = settings.buzzOnCalls,
-                exportToHealthConnect = settings.exportToHealthConnect,
-                estimateSleep = settings.estimateSleep,
-                stepGoal = settings.stepGoal,
-                watchEnabled = watch.enabled,
-                daysSinceExposure = watch.daysSinceExposure,
-                checkInPending = watch.pendingSince != 0L,
-                lastCheckIn = watch.lastCheckInAt,
-            )
+            val candidates = bondedRings().filterNot { c ->
+                configured.any { it.address.equals(c.address, ignoreCase = true) }
+            }
+            val available = exporter.isAvailable()
+            // Suspends on a Health Connect call; the state is only touched after it returns, and then
+            // atomically, so nothing written meanwhile by another coroutine is overwritten.
+            val granted = runCatching { exporter.hasPermissions() }.getOrDefault(false)
+            _ui.update {
+                it.copy(
+                    rings = configured,
+                    candidates = candidates,
+                    healthConnectAvailable = available,
+                    healthConnectGranted = granted,
+                    notificationAccess = hasNotificationAccess(app),
+                    buzzOnNotifications = settings.buzzOnNotifications,
+                    buzzOnCalls = settings.buzzOnCalls,
+                    exportToHealthConnect = settings.exportToHealthConnect,
+                    estimateSleep = settings.estimateSleep,
+                    stepGoal = settings.stepGoal,
+                    watchEnabled = watch.enabled,
+                    daysSinceExposure = watch.daysSinceExposure,
+                    checkInPending = watch.pendingSince != 0L,
+                    lastCheckIn = watch.lastCheckInAt,
+                )
+            }
         }
     }
 
@@ -352,23 +381,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun startScan() {
         if (scanJob?.isActive == true) return
-        _ui.value = _ui.value.copy(scanning = true, discovered = emptyList())
+        _ui.update { it.copy(scanning = true, discovered = emptyList()) }
         scanJob = viewModelScope.launch {
             val known = settings.rings.map { it.address.lowercase() }.toSet()
             withTimeoutOrNull(SCAN_MILLIS) {
                 RingScanner(getApplication()).scan().collect { list ->
-                    _ui.value = _ui.value.copy(
+                    _ui.update { it.copy(
                         discovered = list.filterNot { it.address.lowercase() in known },
-                    )
+                    ) }
                 }
             }
-            _ui.value = _ui.value.copy(scanning = false)
+            _ui.update { it.copy(scanning = false) }
         }
     }
 
     fun stopScan() {
         scanJob?.cancel()
-        _ui.value = _ui.value.copy(scanning = false)
+        _ui.update { it.copy(scanning = false) }
     }
 
     /** Adopt a discovered ring: storing it makes the service connect, which performs the bonding. */
@@ -392,12 +421,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setBuzzOnNotifications(on: Boolean) {
         settings.buzzOnNotifications = on
-        _ui.value = _ui.value.copy(buzzOnNotifications = on)
+        _ui.update { it.copy(buzzOnNotifications = on) }
     }
 
     fun setBuzzOnCalls(on: Boolean) {
         settings.buzzOnCalls = on
-        _ui.value = _ui.value.copy(buzzOnCalls = on)
+        _ui.update { it.copy(buzzOnCalls = on) }
     }
 
     fun setWatchEnabled(on: Boolean) {
@@ -433,12 +462,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setEstimateSleep(on: Boolean) {
         settings.estimateSleep = on
-        _ui.value = _ui.value.copy(estimateSleep = on)
+        _ui.update { it.copy(estimateSleep = on) }
     }
 
     fun setExport(on: Boolean) {
         settings.exportToHealthConnect = on
-        _ui.value = _ui.value.copy(exportToHealthConnect = on)
+        _ui.update { it.copy(exportToHealthConnect = on) }
     }
 
     fun connect() = RingService.start(getApplication())
@@ -446,15 +475,86 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun testBuzz() = RingService.start(getApplication(), RingService.ACTION_BUZZ)
     fun reExport() = RingService.start(getApplication(), RingService.ACTION_REEXPORT)
 
+    // ---- backups ----------------------------------------------------------------------------
+
+    /** Manual backups and restores run outside this screen; it only shows their progress. */
+    val backupJob: StateFlow<BackupJobs.State> = BackupJobs.state
+
+    private var folderLookup: kotlinx.coroutines.Job? = null
+
+    init {
+        var wasBusy = false
+        BackupJobs.state.onEach { job ->
+            if (wasBusy && !job.busy) refresh()
+            wasBusy = job.busy
+        }.launchIn(viewModelScope)
+    }
+
+    /**
+     * Update the automatic-backup status. Cheap settings apply at once; the folder's name and
+     * reachability need a query to its provider, slow for a cloud folder, so that runs off the main
+     * thread and is applied only if the folder is still the one it looked up.
+     */
+    private fun refreshBackup() {
+        _ui.update {
+            it.copy(
+                backup = it.backup.copy(
+                    autoEnabled = backupSettings.enabled,
+                    keep = backupSettings.keep,
+                    lastAt = backupSettings.lastAt,
+                    lastResult = backupSettings.lastResult,
+                ),
+            )
+        }
+        folderLookup?.cancel()
+        val tree = backupSettings.folder
+        folderLookup = viewModelScope.launch(Dispatchers.IO) {
+            val folder = tree?.let { BackupFolder(getApplication(), it) }
+            val name = folder?.displayName()
+            val reachable = folder?.reachable() ?: true
+            if (backupSettings.folder == tree) {
+                _ui.update { it.copy(backup = it.backup.copy(folderName = name, folderReachable = reachable)) }
+            }
+        }
+    }
+
+    fun backupTo(uri: android.net.Uri) = BackupJobs.backupTo(getApplication(), uri)
+    fun openRestore(uri: android.net.Uri) = BackupJobs.openRestore(getApplication(), uri)
+    fun confirmRestore() = BackupJobs.confirmRestore(getApplication())
+    fun cancelRestore() = BackupJobs.cancelRestore()
+
+    fun setAutoBackup(on: Boolean) {
+        backupSettings.enabled = on
+        AutoBackup.schedule(getApplication())
+        refreshBackup()
+    }
+
+    fun chooseBackupFolder(tree: android.net.Uri) {
+        runCatching { AutoBackup.useFolder(getApplication(), tree) }
+            .onFailure { L.e("could not keep folder permission", it) }
+        // A folder chosen with automatic backups already on should not wait a day for the first one.
+        if (backupSettings.enabled) AutoBackup.runSoon(getApplication())
+        refreshBackup()
+    }
+
+    fun setBackupKeep(n: Int) {
+        backupSettings.keep = n
+        refreshBackup()
+    }
+
+    fun backupToFolderNow() = BackupJobs.backupToFolder(getApplication())
+
+    fun dismissBackupNotice() = BackupJobs.dismissNotice(getApplication())
+
     fun exportCsv(uri: android.net.Uri) {
         viewModelScope.launch {
             val rows = runCatching {
                 CsvExport(getApplication(), RingDatabase.get(getApplication()).dao())
                     .writeTo(uri, clock)
             }.onFailure { L.e("csv export failed", it) }.getOrDefault(0)
-            _ui.value = _ui.value.copy(
-                exportMessage = if (rows > 0) "Exported ${'$'}rows rows" else "Export failed",
-            )
+            _ui.update { it.copy(
+                exportMessage = if (rows > 0) "Exported $rows rows" else "Export failed",
+            ) }
         }
     }
     fun measureHeartRate() = RingService.measure(getApplication(), spo2 = false)

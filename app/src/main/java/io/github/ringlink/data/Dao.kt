@@ -143,8 +143,29 @@ interface RingDao {
     )
     fun restingHeartRateBetween(from: Long, to: Long, sampleCount: Int): Flow<Int?>
 
-    @Query("SELECT * FROM epochs WHERE counter > :after ORDER BY counter LIMIT :limit")
-    suspend fun epochsAfter(after: Long, limit: Int): List<EpochEntity>
+    /**
+     * One page of epochs after (ring, counter), in primary-key order.
+     *
+     * Ordered by the primary key so SQLite walks its index: ordered by (counter, ring) instead, each
+     * page scanned and re-sorted the whole table, which makes a backup quadratic in history length —
+     * minutes on a phone after a year of two rings. Paging on the full key also never skips a row
+     * when two rings share a counter, which paging on the counter alone did.
+     */
+    @Query(
+        "SELECT * FROM epochs WHERE (ringId, counter) > (:afterRing, :afterCounter) " +
+            "ORDER BY ringId, counter LIMIT :limit",
+    )
+    suspend fun epochsAfter(afterRing: String, afterCounter: Long, limit: Int): List<EpochEntity>
+
+    @Query(
+        "SELECT * FROM device_state WHERE (ringId, recordedAt) > (:afterRing, :afterAt) " +
+            "ORDER BY ringId, recordedAt LIMIT :limit",
+    )
+    suspend fun deviceStatesAfter(afterRing: String, afterAt: Long, limit: Int): List<DeviceStateEntity>
+
+    /** For restoring: never overwrites a reading already here, unlike the live insert. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertDeviceStatesIfAbsent(rows: List<DeviceStateEntity>): List<Long>
 
     @Query("SELECT * FROM device_state ORDER BY recordedAt")
     suspend fun allDeviceStates(): List<DeviceStateEntity>
@@ -157,6 +178,15 @@ interface RingDao {
             "ORDER BY recordedAt DESC LIMIT 1",
     )
     suspend fun latestCaseReading(ringId: String): DeviceStateEntity?
+
+    @Query("SELECT COUNT(*) FROM epochs")
+    suspend fun countEpochs(): Long
+
+    @Query("SELECT COUNT(*) FROM device_state")
+    suspend fun countDeviceStates(): Long
+
+    @Query("SELECT COUNT(*) FROM sport")
+    suspend fun countSport(): Long
 
     @Query("SELECT DISTINCT ringId FROM device_state")
     suspend fun deviceStateRings(): List<String>

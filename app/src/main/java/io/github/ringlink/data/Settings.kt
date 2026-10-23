@@ -6,7 +6,7 @@ import androidx.core.content.edit
 /** Plain app settings. Nothing here is secret; the ring address is a local BLE MAC. */
 class Settings(context: Context) {
 
-    private val prefs = context.getSharedPreferences("ringlink", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     /**
      * Every ring the user owns.
@@ -80,6 +80,11 @@ class Settings(context: Context) {
     fun setLowBatteryWarned(ringId: String, warned: Boolean) =
         prefs.edit { putBoolean(KEY_WARNED + ringId, warned) }
 
+    /** Set once the old batch-id skin-temperature records have been replaced by hourly ones. */
+    var temperatureHourlyMigrated: Boolean
+        get() = prefs.getBoolean(KEY_TEMP_HOURLY, false)
+        set(v) = prefs.edit { putBoolean(KEY_TEMP_HOURLY, v) }
+
     var exportToHealthConnect: Boolean
         get() = prefs.getBoolean(KEY_EXPORT_HC, true)
         set(v) = prefs.edit { putBoolean(KEY_EXPORT_HC, v) }
@@ -108,7 +113,8 @@ class Settings(context: Context) {
         return if (from <= to) hour in from until to else hour >= from || hour < to
     }
 
-    private companion object {
+    companion object {
+        const val FILE = "ringlink"
         const val KEY_RINGS = "rings"
         const val KEY_ADDRESS = "ring_address"
         const val KEY_NAME = "ring_name"
@@ -122,6 +128,7 @@ class Settings(context: Context) {
         const val KEY_LOW_BATTERY = "low_battery_percent"
         const val KEY_WARNED = "low_battery_warned_"
         const val KEY_SLEEP = "estimate_sleep"
+        const val KEY_TEMP_HOURLY = "temperature_hourly_migrated"
         const val KEY_MUTED = "muted_packages"
         const val KEY_QUIET_FROM = "quiet_from"
         const val KEY_QUIET_TO = "quiet_to"

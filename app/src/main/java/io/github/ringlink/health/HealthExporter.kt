@@ -8,6 +8,7 @@ import io.github.ringlink.data.StepQuarters
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
+import io.github.ringlink.protocol.Descriptor
 import io.github.ringlink.protocol.RingClock
 
 /**
@@ -77,7 +78,6 @@ class HealthExporter(
 
         val records = ArrayList<Record>()
         records += writer.mapEpochs(epochs, clock)
-        records += temperatureRecords(states)
         records += writer.mapSport(sport, clock)
 
         if (records.isNotEmpty()) writer.insert(records)
@@ -88,21 +88,45 @@ class HealthExporter(
     }
 
     /**
-     * Skin temperature, grouped per ring so each gets its own personal baseline.
+     * Skin temperature, one record per ring per finished hour.
      *
-     * Health Connect stores this as a deviation from a baseline rather than an absolute, which
-     * suits the measurement: a finger's surface temperature says little on its own and a lot when
-     * compared against the same finger's norm.
+     * Recomputed over a window, like steps, because an hour's record needs all of that hour's
+     * readings; built from whatever rows happened to be waiting, an hour split across two exports
+     * would be written twice under different ids.
+     *
+     * Only readings from a ring that looks worn are sent. A ring on a table reads the room — 25 °C
+     * is a fine room and a dangerous finger — and filed as skin temperature it is simply wrong.
      */
-    private fun temperatureRecords(states: List<DeviceStateEntity>): List<Record> {
-        if (!writer.skinTemperatureSupported()) return emptyList()
-        return states.groupBy { it.ringId }.flatMap { (_, rows) ->
-            val usable = rows.filter { it.skinTempA in PLAUSIBLE_SKIN_TEMP }
-            if (usable.size < 2) return@flatMap emptyList()
-            val baseline = usable.map { it.skinTempA }.sorted()[usable.size / 2]
-            writer.mapSkinTemperature(usable, baseline)
+    suspend fun exportTemperature(windowMillis: Long? = STEPS_WINDOW_MS): Int {
+        if (!settings.exportToHealthConnect || !hasPermissions() || !writer.skinTemperatureSupported()) return 0
+        val now = System.currentTimeMillis()
+        // From an hour boundary. Starting mid-hour, the oldest hour was rebuilt from only the
+        // readings after the window start and, under the same id, replaced the complete record
+        // written earlier — on every sync.
+        val since = if (windowMillis == null) 0L else Math.floorDiv(now - windowMillis, HOUR_MS) * HOUR_MS
+        var written = 0
+        for (ringId in repo.deviceStateRings()) {
+            val worn = repo.deviceStatesSince(ringId, since)
+                .filter { !it.onCharger && it.skinTempA >= Descriptor.WORN_SKIN_TEMP_C && it.skinTempA <= MAX_SKIN_TEMP }
+            val records = worn.groupBy { Math.floorDiv(it.recordedAt, HOUR_MS) * HOUR_MS }
+                .filterKeys { hour -> hour + HOUR_MS <= now }
+                .mapNotNull { (hour, rows) -> writer.mapSkinTemperatureHour(ringId, hour, rows) }
+            if (records.isEmpty()) continue
+            records.chunked(BATCH).forEach { writer.insert(it) }
+            written += records.size
         }
+        return written
     }
+
+    /**
+     * Gated exactly like [exportTemperature]: deleting what cannot then be rewritten — export
+     * switched off, or the feature unavailable — would just erase the history from Health Connect.
+     */
+    suspend fun deleteExportedSkinTemperature(): Boolean = runCatching {
+        if (!settings.exportToHealthConnect || !hasPermissions() || !writer.skinTemperatureSupported()) return false
+        writer.deleteAllSkinTemperature()
+        true
+    }.getOrDefault(false)
 
     /**
      * Write an estimate of when the wearer slept.
@@ -112,7 +136,7 @@ class HealthExporter(
      * refines an estimate in place instead of stacking duplicates.
      */
     suspend fun exportSleep(clock: RingClock, windowSeconds: Long? = SLEEP_WINDOW_SECONDS): Int {
-        if (!settings.estimateSleep || !hasPermissions()) return 0
+        if (!settings.estimateSleep || !settings.exportToHealthConnect || !hasPermissions()) return 0
         // A null window means all of history — what a re-export needs, having just deleted every
         // session it wrote. Rewriting only the last week would have lost every older night.
         val since = if (windowSeconds == null) {
@@ -146,7 +170,9 @@ class HealthExporter(
     suspend fun exportSteps(windowMillis: Long? = STEPS_WINDOW_MS): Int {
         if (!settings.exportToHealthConnect || !hasPermissions()) return 0
         val now = System.currentTimeMillis()
-        val since = if (windowMillis == null) 0L else now - windowMillis
+        // From a quarter boundary: a window starting mid-quarter would see only that quarter's tail
+        // and could rewrite it under the same id with less than it really held.
+        val since = if (windowMillis == null) 0L else Math.floorDiv(now - windowMillis, StepQuarters.QUARTER_MS) * StepQuarters.QUARTER_MS
         var written = 0
         for (ringId in repo.deviceStateRings()) {
             val samples = repo.deviceStatesSince(ringId, since).map { StepSample(it.recordedAt, it.steps) }
@@ -161,7 +187,7 @@ class HealthExporter(
 
     /** Remove every steps record written so far — older versions wrote them on a wrong basis. */
     suspend fun deleteExportedSteps(): Boolean = runCatching {
-        if (!hasPermissions()) return false
+        if (!settings.exportToHealthConnect || !hasPermissions()) return false
         writer.deleteAllSteps()
         true
     }.getOrDefault(false)
@@ -181,7 +207,7 @@ class HealthExporter(
      * be inventing sleep the user did not have. Health data is exactly where guessing is worst.
      */
     suspend fun deleteExportedSleepSessions(): Boolean = runCatching {
-        if (!hasPermissions()) return false
+        if (!settings.estimateSleep || !settings.exportToHealthConnect || !hasPermissions()) return false
         writer.deleteAllSleepSessions()
         true
     }.getOrDefault(false)
@@ -189,8 +215,9 @@ class HealthExporter(
     private companion object {
         const val BATCH = 500
         const val MAX_BATCHES = 200
-        /** Anything outside this is not a finger. */
-        val PLAUSIBLE_SKIN_TEMP = 20.0..42.0
+        /** Above this the sensor is not reading a finger. */
+        const val MAX_SKIN_TEMP = 42.0
+        const val HOUR_MS = 3_600_000L
         const val SLEEP_WINDOW_SECONDS = 7 * 24 * 3600L
         /** Quarters change only while they are current; two days covers any late sync. */
         const val STEPS_WINDOW_MS = 2 * 24 * 3600_000L

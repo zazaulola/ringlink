@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +45,9 @@ import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.ringlink.health.HealthExporter
 import io.github.ringlink.ble.RingService
+import io.github.ringlink.backup.BackupJobs
+import io.github.ringlink.backup.BackupRotation
+import io.github.ringlink.backup.PendingRestore
 import io.github.ringlink.protocol.LiveMeasurement
 import io.github.ringlink.protocol.LiveMode
 import java.text.DateFormat
@@ -67,6 +72,17 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
 
     // Storage Access Framework: the user picks where the file goes, so the app needs no storage
     // permission and the export lands somewhere they chose rather than in private app storage.
+    val backupTo = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri -> uri?.let { vm.backupTo(it) } }
+    // Some providers report a zip as octet-stream, so offer everything and let the check decide.
+    val restoreFrom = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { vm.openRestore(it) } }
+    val backupFolder = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri -> uri?.let { vm.chooseBackupFolder(it) } }
+
     val exportCsv = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/csv"),
     ) { uri -> uri?.let { vm.exportCsv(it) } }
@@ -256,6 +272,84 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                 )
             }
 
+            SectionCard("Backups") {
+                val b = ui.backup
+                val job by vm.backupJob.collectAsState()
+                Text(
+                    "This phone holds the only complete copy of what your rings recorded: reading " +
+                        "history off a ring erases it there, and Health Connect only gets derived " +
+                        "records. A backup keeps every reading and your settings in one file.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { backupTo.launch(BackupRotation.manualNameFor(System.currentTimeMillis())) },
+                        enabled = !job.busy,
+                    ) { Text("Back up now") }
+                    OutlinedButton(
+                        onClick = { restoreFrom.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                        enabled = !job.busy,
+                    ) { Text("Restore…") }
+                }
+                Text(
+                    "Restoring merges: readings are only ever added, never overwritten, so restoring " +
+                        "an old backup cannot lose anything recorded since.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                ToggleRow("Automatic daily backup", b.autoEnabled, vm::setAutoBackup)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        when {
+                            b.folderName == null -> "No folder chosen"
+                            !b.folderReachable -> "Folder ${b.folderName} — no longer reachable"
+                            else -> "Folder: ${b.folderName}"
+                        },
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    OutlinedButton(onClick = { backupFolder.launch(null) }) { Text("Choose") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Keep the last ${b.keep}", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    OutlinedButton(onClick = { vm.setBackupKeep(b.keep - 1) }, enabled = b.keep > 1) { Text("−") }
+                    OutlinedButton(onClick = { vm.setBackupKeep(b.keep + 1) }) { Text("+") }
+                }
+                when {
+                    b.autoEnabled && b.folderName == null ->
+                        Text("Choose a folder to start backing up.", style = MaterialTheme.typography.bodySmall)
+                    b.lastAt > 0 ->
+                        Text(
+                            "Last automatic backup ${ago(b.lastAt)} · ${b.lastResult ?: ""}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                }
+                OutlinedButton(
+                    onClick = { vm.backupToFolderNow() },
+                    enabled = !job.busy && b.folderName != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Back up to the folder now") }
+                Text(
+                    "Choose any folder the file picker offers — a cloud folder such as Drive or " +
+                        "Nextcloud keeps copies off the phone. Backups are not encrypted: they " +
+                        "contain your health data, so keep them somewhere private.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                job.message?.let { msg ->
+                    Text(msg, style = MaterialTheme.typography.bodyMedium)
+                    if (msg == BackupJobs.INTERRUPTED) {
+                        TextButton(onClick = vm::dismissBackupNotice) { Text("Got it") }
+                    }
+                }
+                job.pending?.let { p ->
+                    RestoreDialog(p, onConfirm = vm::confirmRestore, onCancel = vm::cancelRestore)
+                }
+            }
+
             SectionCard("Buzz the ring") {
                 ToggleRow("On notifications", ui.buzzOnNotifications, vm::setBuzzOnNotifications)
                 ToggleRow("On incoming calls", ui.buzzOnCalls, vm::setBuzzOnCalls)
@@ -414,6 +508,38 @@ private fun ago(millis: Long): String {
         minutes < 48 * 60 -> "${minutes / 60} h ago"
         else -> "${minutes / (24 * 60)} days ago"
     }
+}
+
+/** What a backup holds, shown before anything is touched. */
+@Composable
+private fun RestoreDialog(p: PendingRestore, onConfirm: () -> Unit, onCancel: () -> Unit) {
+    val made = remember(p.createdAt) {
+        java.text.SimpleDateFormat("d MMM yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date(p.createdAt))
+    }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(if (p.problems.isEmpty()) "Restore this backup?" else "Cannot restore") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Made $made")
+                if (p.rings.isNotEmpty()) Text("Rings: ${p.rings.joinToString(", ")}")
+                Text("${p.epochs} epochs, ${p.readings} device readings")
+                if (p.problems.isEmpty()) {
+                    Text(
+                        "It will be merged into what is here: anything missing is added, nothing " +
+                            "already here is changed.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    p.problems.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        },
+        confirmButton = {
+            if (p.problems.isEmpty()) TextButton(onClick = onConfirm) { Text("Merge into this phone") }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
 }
 
 @Composable

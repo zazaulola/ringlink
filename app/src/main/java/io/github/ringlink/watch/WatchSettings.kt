@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit
  */
 class WatchSettings(context: Context) {
 
-    private val prefs = context.getSharedPreferences("ringlink_watch", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_ENABLED, false)
@@ -43,7 +43,8 @@ class WatchSettings(context: Context) {
         get() = if (exposureAt == 0L) null
         else TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis() - exposureAt)
 
-    private companion object {
+    companion object {
+        const val FILE = "ringlink_watch"
         const val KEY_ENABLED = "enabled"
         const val KEY_EXPOSURE = "exposure_at"
         const val KEY_INTERVAL = "interval_hours"

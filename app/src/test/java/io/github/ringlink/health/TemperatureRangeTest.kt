@@ -7,36 +7,30 @@ import java.time.Instant
 /**
  * Health Connect's rule for a skin-temperature record, encoded so it cannot be broken again.
  *
- * Its constructor accepts a delta at exactly `startTime`, but requires every delta to be strictly
- * before `endTime`. Ending a record on its last reading's own instant therefore throws
- * `IllegalArgumentException: deltas can not be out of parent time range` — which crashed the export
- * coroutine and, with it, every other record type in the same batch.
+ * Its constructor accepts a delta at exactly `startTime` but requires every delta to be strictly
+ * before `endTime`; breaking that once crashed the whole export. Records now span one clock hour,
+ * and every reading assigned to an hour must sit inside it by that rule — including one taken at
+ * the very first millisecond of the hour and one at the very last.
  */
 class TemperatureRangeTest {
 
-    /** Mirrors the range HealthConnectWriter.mapSkinTemperature builds for a group of readings. */
-    private fun rangeFor(readingTimes: List<Long>): Pair<Instant, Instant> {
-        val ordered = readingTimes.sorted()
-        val start = Instant.ofEpochMilli(ordered.first())
-        val end = Instant.ofEpochMilli(ordered.last()).plusSeconds(1)
-        return start to end
-    }
+    private val hour = 3_600_000L
+    private fun hourOf(t: Long) = Math.floorDiv(t, hour) * hour
 
-    @Test fun `every reading falls inside the record's range`() {
-        val readings = listOf(1_700_000_000_000L, 1_700_000_030_000L, 1_700_000_060_000L)
-        val (start, end) = rangeFor(readings)
-        for (t in readings) {
+    @Test fun `every reading falls inside its hour's record`() {
+        val base = 1_761_199_200_000L          // an hour boundary
+        for (t in listOf(base, base + 1, base + hour / 2, base + hour - 1)) {
+            val start = Instant.ofEpochMilli(hourOf(t))
+            val end = start.plusMillis(hour)
             val at = Instant.ofEpochMilli(t)
             assertTrue("$at is before the record start", !at.isBefore(start))
             assertTrue("$at is not strictly before the record end", at.isBefore(end))
         }
     }
 
-    /** A single reading still has to produce a usable, non-empty range. */
-    @Test fun `a lone reading still yields a valid range`() {
-        val only = 1_700_000_000_000L
-        val (start, end) = rangeFor(listOf(only))
-        assertTrue(end.isAfter(start))
-        assertTrue(Instant.ofEpochMilli(only).isBefore(end))
+    /** The first millisecond of the next hour belongs to the next record, not this one. */
+    @Test fun `the boundary belongs to the next hour`() {
+        val base = 1_761_199_200_000L
+        assertTrue(hourOf(base + hour) == base + hour)
     }
 }
