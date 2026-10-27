@@ -284,9 +284,16 @@ class Restorer(private val context: Context) {
         backup.lines(BackupFormat.EPOCHS).map(BackupFormat::decodeEpoch).chunked(CHUNK).forEach { chunk ->
             db.withTransaction { dao.upsertEpochs(chunk) }
         }
+        // Readings may land anywhere in the past, where the per-quarter steps derived from them are
+        // not looked at again unless rebuilt. Asked for before the first row goes in, so a restore
+        // cut short still gets its rows derived; and again after, so a rebuild that ran meanwhile
+        // and passed their weeks does not count as covering them.
+        val local = Settings(context)
+        local.invalidateStepQuarters()
         backup.lines(BackupFormat.DEVICE_STATE).map(BackupFormat::decodeDeviceState).chunked(CHUNK).forEach { chunk ->
             db.withTransaction { dao.insertDeviceStatesIfAbsent(chunk) }
         }
+        local.invalidateStepQuarters()
         backup.lines(BackupFormat.SPORT).map(BackupFormat::decodeSport).chunked(CHUNK).forEach { chunk ->
             db.withTransaction { dao.insertSport(chunk) }
         }

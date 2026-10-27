@@ -21,8 +21,16 @@ object SettingsSnapshot {
 
     /** Keys never carried, by prefs file; a trailing '*' matches a prefix. */
     private val EXCLUDED = mapOf(
-        // The migration flag records the state of this phone's Health Connect, not a preference.
-        Settings.FILE to listOf(Settings.KEY_LAST_SYNC, Settings.KEY_WARNED + "*", Settings.KEY_TEMP_HOURLY),
+        // The migration flags record the state of this phone's Health Connect and database, not a
+        // preference.
+        Settings.FILE to listOf(
+            Settings.KEY_LAST_SYNC,
+            Settings.KEY_WARNED + "*",
+            Settings.KEY_TEMP_HOURLY,
+            Settings.KEY_STEPS_PENDING,
+            Settings.KEY_STEP_QUARTERS_GEN,
+            Settings.KEY_STEP_QUARTERS_BUILT,
+        ),
         // The watch belongs to one episode — a tick bite, say. Restored on another phone it would
         // come back switched on with no alarm scheduled, which is worse than off. Its interval
         // and grace period are preferences and do come back.

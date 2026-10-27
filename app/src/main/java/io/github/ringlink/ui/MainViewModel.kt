@@ -18,8 +18,7 @@ import io.github.ringlink.backup.AutoBackup
 import io.github.ringlink.backup.BackupJobs
 import io.github.ringlink.data.CsvExport
 import io.github.ringlink.data.Ring
-import io.github.ringlink.data.StepSample
-import io.github.ringlink.data.StepQuarters
+import io.github.ringlink.data.StepStore
 import io.github.ringlink.data.WornSpan
 import io.github.ringlink.data.RingNames
 import io.github.ringlink.data.Coverage
@@ -221,29 +220,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val today = MutableStateFlow(todayStartCounter())
 
-    /** Local midnight as wall-clock millis — device readings carry phone time, not ring counters. */
-    private fun midnightMillis(): Long = Calendar.getInstance().apply {
-        set(Calendar.HOUR_OF_DAY, 0)
-        set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0)
-        set(Calendar.MILLISECOND, 0)
-    }.timeInMillis
+    /** Steps by hour, day, week and month, over the whole period of use. */
+    val steps = StepsModel(
+        viewModelScope,
+        StepStore(RingDatabase.get(app).dao(), settings),
+        settings,
+    ) { names.ring(it).shortName }
 
-    /**
-     * Steps since midnight, every ring added up.
-     *
-     * Read from the ring's quarter-hour step counter. This used to sum the sport channel, which on
-     * these rings has never held a single record — so it showed 0 every day.
-     */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val stepsToday: StateFlow<Int> = today
-        .flatMapLatest { repo.deviceStatesSinceFlow(midnightMillis()) }
-        .map { rows ->
-            val byRing = rows.groupBy { it.ringId }
-                .mapValues { (_, r) -> r.map { StepSample(it.recordedAt, it.steps) } }
-            StepQuarters.totalAcrossRings(byRing)
-        }
-        .flowOn(Dispatchers.Default)
+    /** Steps since midnight, every ring added up — the same figure the Steps tab shows. */
+    val stepsToday: StateFlow<Int> = steps.view
+        .map { it?.todayDay?.steps ?: 0 }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     /** Over the last day rather than since midnight: a morning reading needs last night to exist. */
@@ -320,6 +306,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var refreshJob: kotlinx.coroutines.Job? = null
 
     fun refresh() {
+        // A restore may have brought back a different goal or full-day threshold.
+        steps.prefsChanged()
         refreshBackup()
         val app = getApplication<Application>()
         refreshJob?.cancel()
@@ -457,6 +445,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setStepGoal(goal: Int) {
         settings.stepGoal = goal
+        steps.prefsChanged()
         refresh()
     }
 

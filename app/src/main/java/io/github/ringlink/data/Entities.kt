@@ -1,6 +1,7 @@
 package io.github.ringlink.data
 
 import androidx.room.Entity
+import androidx.room.Index
 
 /**
  * One 2.5-minute epoch drained from the ring.
@@ -66,4 +67,29 @@ data class DeviceStateEntity(
     /** Whether the case itself was plugged in; null while the ring is out of the case. */
     val caseCharging: Boolean? = null,
     val exportedAt: Long? = null,
+)
+
+/**
+ * Steps in one quarter-hour from one ring, derived from its [DeviceStateEntity] readings.
+ *
+ * Derived, not source data: it can always be rebuilt from device_state, so it is left out of
+ * backups and rebuilt after a restore. It is kept because the step tables reach back over the
+ * whole period of use, and a year of readings is some 700 000 rows to re-derive on every screen.
+ */
+@Entity(tableName = "step_quarters", primaryKeys = ["ringId", "startMillis"], indices = [Index("startMillis")])
+data class StepQuarterEntity(
+    val ringId: String,
+    /** Phone wall-clock start of the quarter. */
+    val startMillis: Long,
+    val steps: Int,
+    /** Whether any reading in the quarter came from the ring on a finger. */
+    val worn: Boolean,
+)
+
+/** The fields of a reading that steps are derived from. */
+data class StepReading(
+    val recordedAt: Long,
+    val steps: Int,
+    val onCharger: Boolean,
+    val skinTempA: Double,
 )

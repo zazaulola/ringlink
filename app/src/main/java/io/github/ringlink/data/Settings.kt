@@ -85,6 +85,38 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_TEMP_HOURLY, false)
         set(v) = prefs.edit { putBoolean(KEY_TEMP_HOURLY, v) }
 
+    /**
+     * Set by the database upgrade that moved steps onto phone-clock quarters, and cleared once
+     * Health Connect's steps have been rewritten that way. Only an upgrade sets it: on a fresh
+     * install there is nothing of ours in Health Connect to rewrite, and much that could be lost.
+     */
+    var stepsPhoneClockPending: Boolean
+        get() = prefs.getBoolean(KEY_STEPS_PENDING, false)
+        set(v) = prefs.edit { putBoolean(KEY_STEPS_PENDING, v) }
+
+    /**
+     * Stored quarters are current when the generation they were built for is the latest one.
+     * Generations rather than a flag, so readings restored while a rebuild is running — after it
+     * has passed their weeks — ask for another rebuild instead of being marked done by it.
+     */
+    val stepQuartersGeneration: Long get() = prefs.getLong(KEY_STEP_QUARTERS_GEN, 1)
+    var stepQuartersBuiltGeneration: Long
+        get() = prefs.getLong(KEY_STEP_QUARTERS_BUILT, 0)
+        set(v) = prefs.edit { putLong(KEY_STEP_QUARTERS_BUILT, v) }
+
+    fun invalidateStepQuarters() = prefs.edit { putLong(KEY_STEP_QUARTERS_GEN, stepQuartersGeneration + 1) }
+
+    /**
+     * Hours a ring must be heard on a day for that day to count in averages.
+     *
+     * Steps only arrive while the phone is near a worn ring, so a day heard for three hours is not
+     * a quiet day; averaged in, it drags every average down. 13 h is where activity research finds
+     * a day's count within 8% of the real one.
+     */
+    var fullDayHours: Int
+        get() = prefs.getInt(KEY_FULL_DAY_HOURS, 13)
+        set(v) = prefs.edit { putInt(KEY_FULL_DAY_HOURS, v.coerceIn(1, 24)) }
+
     var exportToHealthConnect: Boolean
         get() = prefs.getBoolean(KEY_EXPORT_HC, true)
         set(v) = prefs.edit { putBoolean(KEY_EXPORT_HC, v) }
@@ -129,6 +161,10 @@ class Settings(context: Context) {
         const val KEY_WARNED = "low_battery_warned_"
         const val KEY_SLEEP = "estimate_sleep"
         const val KEY_TEMP_HOURLY = "temperature_hourly_migrated"
+        const val KEY_STEPS_PENDING = "steps_phone_clock_pending"
+        const val KEY_STEP_QUARTERS_GEN = "step_quarters_generation"
+        const val KEY_STEP_QUARTERS_BUILT = "step_quarters_built_generation"
+        const val KEY_FULL_DAY_HOURS = "full_day_hours"
         const val KEY_MUTED = "muted_packages"
         const val KEY_QUIET_FROM = "quiet_from"
         const val KEY_QUIET_TO = "quiet_to"

@@ -24,6 +24,7 @@ import io.github.ringlink.protocol.RingClock
 import io.github.ringlink.protocol.SyncSession
 import io.github.ringlink.trigger.BurstLimiter
 import io.github.ringlink.trigger.CallMonitor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -69,6 +70,8 @@ class RingService : Service() {
     private val syncing = Mutex()
     private val measuring = Mutex()
     private var watchdogJob: Job? = null
+    /** The ring a sync session is running on, if any. */
+    @Volatile private var sessionRing: String? = null
     private var callMonitor: CallMonitor? = null
     private var callAlertJob: Job? = null
     private var notificationStarted = false
@@ -348,7 +351,9 @@ class RingService : Service() {
             L.i("$address is ${info.summary()}")
             updateRing(address) { it.copy(info = info) }
         }
-        startIdleLoop(address)
+        // Not under a sync of this ring: the idle loop would take the frames its session waits
+        // for — the authentication reply among them — and the sync restarts the loop itself.
+        if (sessionRing != address) startIdleLoop(address)
         // A new connection deserves its first wake straight away; the rate limit is there to stop
         // repeated wakes of one silent connection, not to delay the first one after a reconnect.
         lastWakeAt.remove(address)
@@ -385,9 +390,11 @@ class RingService : Service() {
         val now = System.currentTimeMillis()
         val last = lastWakeAt[address]
         if (last != null && now - last < TELEMETRY_STALE_MS) return
-        lastWakeAt[address] = now
-        // A sync opens its own session, which is all this does; never run alongside one.
+        // A sync opens its own session, which is all this does; never run alongside one. Counted as
+        // a wake only once it can run: stamped before, a wake skipped for a sync whose session then
+        // failed left the ring silent for the whole stale period.
         if (!syncing.tryLock()) return
+        lastWakeAt[address] = now
         var flowing = false
         try {
             val client = clientFor(address)
@@ -614,25 +621,15 @@ class RingService : Service() {
                     lastSyncAt = settings.lastSyncAt,
                 )
                 if (settings.exportToHealthConnect) {
-                    val exported = exporter.exportAllPending(clock)
-                    val sleep = exporter.exportSleep(clock)
-                    val steps = exporter.exportSteps()
-                    val temperature = if (!settings.temperatureHourlyMigrated) {
-                        // Records written by earlier versions carry batch-derived ids and include
-                        // room-temperature readings; the hourly ones would sit on top of them. Once,
-                        // remove them all and rewrite the whole history the new way.
-                        if (exporter.deleteExportedSkinTemperature()) {
-                            L.i("migrating skin temperature to hourly records")
-                            val n = exporter.exportTemperature(windowMillis = null)
-                            settings.temperatureHourlyMigrated = true
-                            n
-                        } else {
-                            exporter.exportTemperature()
-                        }
-                    } else {
-                        exporter.exportTemperature()
+                    // Everything is already safe in the database; a Health Connect failure must not
+                    // take the service down with it, nor skip the kinds after the one that failed.
+                    try {
+                        exportToHealthConnect()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        L.e("health connect export failed", e)
                     }
-                    L.i("health connect export: $exported rows, $sleep sleep sessions, $steps step quarters, $temperature temperature hours")
                 }
             } finally {
                 state.value = state.value.copy(syncing = false)
@@ -640,8 +637,31 @@ class RingService : Service() {
         }
     }
 
+    private suspend fun exportToHealthConnect() {
+        val exported = exporter.exportAllPending(clock)
+        val sleep = exporter.exportSleep(clock)
+        val steps = exporter.migrateStepsIfPending() ?: exporter.exportSteps()
+        val temperature = if (!settings.temperatureHourlyMigrated) {
+            // Records written by earlier versions carry batch-derived ids and include
+            // room-temperature readings; the hourly ones would sit on top of them. Once,
+            // remove them and rewrite the history the new way.
+            if (exporter.deleteExportedSkinTemperature()) {
+                L.i("migrating skin temperature to hourly records")
+                val n = exporter.exportTemperature(windowMillis = null)
+                settings.temperatureHourlyMigrated = true
+                n
+            } else {
+                exporter.exportTemperature()
+            }
+        } else {
+            exporter.exportTemperature()
+        }
+        L.i("health connect export: $exported rows, $sleep sleep sessions, $steps step quarters, $temperature temperature hours")
+    }
+
     private suspend fun syncOne(ring: Ring): Int {
         val client = clientFor(ring.address)
+        sessionRing = ring.address
         val job = idleJobs.remove(ring.address)
         job?.cancelAndJoin()
         return try {
@@ -654,6 +674,7 @@ class RingService : Service() {
             L.i("${ring.shortName}: ${stats.epochs} epochs, ${stats.pages} pages")
             stats.epochs
         } finally {
+            sessionRing = null
             delay(200)
             startIdleLoop(ring.address)
         }
@@ -770,9 +791,15 @@ class RingService : Service() {
         if (fresh && exporter.deleteExportedSleepSessions()) L.i("removed previously exported sleep sessions")
         val sleep = runCatching { exporter.exportSleep(clock, windowSeconds = null) }
             .onFailure { L.e("sleep export failed", it) }.getOrDefault(0)
-        if (fresh && exporter.deleteExportedSteps()) L.i("removed previously exported steps")
-        val steps = runCatching { exporter.exportSteps(windowMillis = null) }
-            .onFailure { L.e("steps export failed", it) }.getOrDefault(0)
+        val steps = runCatching {
+            // A rewrite on the new basis is the migration, whichever runs first.
+            val migrated = if (fresh) null else exporter.migrateStepsIfPending()
+            migrated ?: run {
+                val deleted = fresh && exporter.deleteExportedSteps()
+                if (deleted) L.i("removed previously exported steps")
+                exporter.exportSteps(windowMillis = null).also { if (deleted) settings.stepsPhoneClockPending = false }
+            }
+        }.onFailure { L.e("steps export failed", it) }.getOrDefault(0)
         if (fresh && exporter.deleteExportedSkinTemperature()) L.i("removed previously exported skin temperature")
         val temperature = runCatching { exporter.exportTemperature(windowMillis = null) }
             .onFailure { L.e("temperature export failed", it) }.getOrDefault(0)

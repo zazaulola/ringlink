@@ -101,7 +101,8 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
         ) {
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Status") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("History") })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Steps") })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("History") })
             }
             Column(
                 Modifier
@@ -111,6 +112,10 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (tab == 1) {
+                    StepsScreen(vm)
+                    return@Column
+                }
+                if (tab == 2) {
                     HistoryScreen(vm)
                     return@Column
                 }
@@ -543,7 +548,7 @@ private fun RestoreDialog(p: PendingRestore, onConfirm: () -> Unit, onCancel: ()
 }
 
 @Composable
-private fun SectionCard(title: String, content: @Composable () -> Unit) {
+internal fun SectionCard(title: String, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)

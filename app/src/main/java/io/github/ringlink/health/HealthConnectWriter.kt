@@ -222,12 +222,9 @@ class HealthConnectWriter(private val context: Context) {
             )
         }
 
-    /** Remove every steps record this app wrote; others' steps are untouched. */
-    suspend fun deleteAllSteps() {
-        client().deleteRecords(
-            StepsRecord::class,
-            TimeRangeFilter.between(Instant.ofEpochSecond(0), Instant.now().plusSeconds(86_400)),
-        )
+    /** Remove the steps records this app wrote in a span; others' steps are untouched. */
+    suspend fun deleteSteps(from: Instant, to: Instant) {
+        client().deleteRecords(StepsRecord::class, TimeRangeFilter.between(from, to))
     }
 
     /**
@@ -281,11 +278,8 @@ class HealthConnectWriter(private val context: Context) {
     }
 
     /** Remove every skin-temperature record this app wrote; others' are untouched. */
-    suspend fun deleteAllSkinTemperature() {
-        client().deleteRecords(
-            SkinTemperatureRecord::class,
-            TimeRangeFilter.between(Instant.ofEpochSecond(0), Instant.now().plusSeconds(86_400)),
-        )
+    suspend fun deleteSkinTemperature(from: Instant, to: Instant) {
+        client().deleteRecords(SkinTemperatureRecord::class, TimeRangeFilter.between(from, to))
     }
 
     /**

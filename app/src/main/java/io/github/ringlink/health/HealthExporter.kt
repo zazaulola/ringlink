@@ -2,14 +2,19 @@ package io.github.ringlink.health
 
 import android.content.Context
 import androidx.health.connect.client.records.Record
+import io.github.ringlink.L
 import io.github.ringlink.data.DeviceStateEntity
-import io.github.ringlink.data.StepSample
+import io.github.ringlink.data.QuarterSteps
+import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.StepQuarters
+import io.github.ringlink.data.StepStore
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
 import io.github.ringlink.protocol.Descriptor
 import io.github.ringlink.protocol.RingClock
+import kotlinx.coroutines.CancellationException
+import java.time.Instant
 
 /**
  * Moves stored ring data into Health Connect and marks it exported.
@@ -25,6 +30,7 @@ class HealthExporter(
 ) {
 
     private val writer = HealthConnectWriter(context)
+    private val steps = StepStore(RingDatabase.get(context).dao(), settings)
 
     val permissions: Set<String> get() = writer.permissions
     fun isAvailable(): Boolean = writer.isAvailable()
@@ -124,9 +130,21 @@ class HealthExporter(
      */
     suspend fun deleteExportedSkinTemperature(): Boolean = runCatching {
         if (!settings.exportToHealthConnect || !hasPermissions() || !writer.skinTemperatureSupported()) return false
-        writer.deleteAllSkinTemperature()
+        localSpan()?.let { (from, to) -> writer.deleteSkinTemperature(from, to) }
         true
     }.getOrDefault(false)
+
+    /**
+     * The span the readings here cover — all a rewrite can put back.
+     *
+     * Health Connect keeps an app's records through a reinstall or cleared storage, so deleting
+     * "everything this app wrote" would take months of history that the readings here, a few days'
+     * worth on a new install, could never replace. Null when there are no readings at all.
+     */
+    private suspend fun localSpan(): Pair<Instant, Instant>? {
+        val oldest = steps.oldestReading() ?: return null
+        return Instant.ofEpochMilli(StepQuarters.floor(oldest)) to Instant.now().plusSeconds(86_400)
+    }
 
     /**
      * Write an estimate of when the wearer slept.
@@ -170,14 +188,15 @@ class HealthExporter(
     suspend fun exportSteps(windowMillis: Long? = STEPS_WINDOW_MS): Int {
         if (!settings.exportToHealthConnect || !hasPermissions()) return 0
         val now = System.currentTimeMillis()
+        steps.refresh(now)
         // From a quarter boundary: a window starting mid-quarter would see only that quarter's tail
         // and could rewrite it under the same id with less than it really held.
         val since = if (windowMillis == null) 0L else Math.floorDiv(now - windowMillis, StepQuarters.QUARTER_MS) * StepQuarters.QUARTER_MS
+        // Up to the quarter in progress, which is still counting.
+        val until = Math.floorDiv(now, StepQuarters.QUARTER_MS) * StepQuarters.QUARTER_MS
         var written = 0
-        for (ringId in repo.deviceStateRings()) {
-            val samples = repo.deviceStatesSince(ringId, since).map { StepSample(it.recordedAt, it.steps) }
-            val finished = StepQuarters.quarters(samples).filter { it.endMillis <= now }
-            val records = writer.mapQuarterSteps(ringId, finished)
+        for ((ringId, rows) in steps.quarters(since, until).groupBy { it.ringId }) {
+            val records = writer.mapQuarterSteps(ringId, rows.map { QuarterSteps(it.startMillis, it.steps, it.worn) })
             if (records.isEmpty()) continue
             records.chunked(BATCH).forEach { writer.insert(it) }
             written += records.size
@@ -188,9 +207,35 @@ class HealthExporter(
     /** Remove every steps record written so far — older versions wrote them on a wrong basis. */
     suspend fun deleteExportedSteps(): Boolean = runCatching {
         if (!settings.exportToHealthConnect || !hasPermissions()) return false
-        writer.deleteAllSteps()
+        localSpan()?.let { (from, to) -> writer.deleteSteps(from, to) }
         true
     }.getOrDefault(false)
+
+    /**
+     * Once, after the upgrade that dated steps by the phone's clock: replace what earlier versions
+     * wrote, which sits under other ids and would otherwise count the same walk twice.
+     *
+     * Returns the quarters written, or null when nothing was pending or it could not run. A failure
+     * leaves it pending, to be tried again on the next sync, rather than half done and forgotten.
+     */
+    suspend fun migrateStepsIfPending(): Int? {
+        if (!settings.stepsPhoneClockPending) return null
+        if (!settings.exportToHealthConnect || !hasPermissions()) return null
+        if (steps.oldestReading() == null) {
+            settings.stepsPhoneClockPending = false
+            return null
+        }
+        return try {
+            L.i("migrating steps to phone-clock quarters")
+            check(deleteExportedSteps()) { "could not remove the old steps" }
+            exportSteps(windowMillis = null).also { settings.stepsPhoneClockPending = false }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            L.e("steps migration failed; will retry", e)
+            null
+        }
+    }
 
     /**
      * Sleep STAGES are deliberately NOT exported.

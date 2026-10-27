@@ -32,7 +32,8 @@ something the vendor app deliberately does not do, since it restricts haptics to
 | **Buzzes the ring** | On notifications and incoming calls, using the captured Gen 3 vibrate command |
 | **Measure on demand** | Tap for a heart-rate or blood-oxygen reading and watch it settle, the way the vendor app's measure button works |
 | **Find my ring** | Blinks the locator LED and buzzes, to find a ring you have put down |
-| **Today** | Steps against a goal and resting heart rate, from the ring's own activity log |
+| **Today** | Steps against a goal, compared with yesterday by the same time, and resting heart rate |
+| **Steps** | Tables and charts for the whole period of use: yesterday and today by hour, the last 7 days by hour, this and last month by day with calendar-week averages, and every month since the first. Each figure says how long the ring was heard — steps only reach the phone while it is connected, so an unheard hour shows "—", not 0, and averages count only days heard for long enough |
 | **Sleep** | Estimated nights with the vitals measured during each — see below |
 | **Export** | Every reading as CSV, with raw ring counters alongside timestamps |
 | **Charging case** | Its charge and whether it is plugged in, remembered after the ring is taken out; a notice when the spare ring is charged and when the case is about to go flat |
@@ -55,7 +56,7 @@ omitting it: **sleep stages**, **stress / readiness / sleep scores**, and the **
 vascular trends**, which on the vendor side are modelled rather than measured.
 
 Not yet built, but possible: automatic workout detection and workout sessions, cycle tracking from
-temperature, weekly and monthly reports, and sedentary or high-heart-rate reminders.
+temperature, weekly and monthly reports beyond steps, and sedentary or high-heart-rate reminders.
 
 Two things here have no vendor equivalent at all: **notifications and calls buzzing the ring**, and
 the **check-in alarm** that sounds through a silenced phone.

@@ -217,6 +217,74 @@ interface RingDao {
         """,
     )
     fun summarySince(since: Long): Flow<Summary?>
+
+    // --- step quarters ---------------------------------------------------------------------------
+
+    @Query(
+        "SELECT recordedAt, steps, onCharger, skinTempA FROM device_state " +
+            "WHERE ringId = :ringId AND recordedAt >= :from AND recordedAt < :to ORDER BY recordedAt",
+    )
+    suspend fun stepReadings(ringId: String, from: Long, to: Long): List<StepReading>
+
+    @Query("SELECT MIN(recordedAt) FROM device_state WHERE ringId = :ringId")
+    suspend fun oldestDeviceStateAt(ringId: String): Long?
+
+    @Query("SELECT MAX(recordedAt) FROM device_state WHERE ringId = :ringId")
+    suspend fun newestDeviceStateAt(ringId: String): Long?
+
+    @Query("SELECT MAX(startMillis) FROM step_quarters WHERE ringId = :ringId")
+    suspend fun newestStepQuarter(ringId: String): Long?
+
+    /**
+     * The latest reading before [before] that is clear of the quarter-boundary corrections —
+     * StepQuarters.settled: more than LAG_MS (30 s) past a boundary and more than LEAD_MS (30 s)
+     * before the next. Walks the key backwards, so it stops at the first one.
+     */
+    @Query(
+        "SELECT recordedAt FROM device_state WHERE ringId = :ringId AND recordedAt < :before " +
+            "AND recordedAt % 900000 > 30000 AND recordedAt % 900000 < 870000 " +
+            "ORDER BY recordedAt DESC LIMIT 1",
+    )
+    suspend fun settledReadingBefore(ringId: String, before: Long): Long?
+
+    /**
+     * Every ring with readings, by hopping along the key one ring at a time. A plain DISTINCT reads
+     * the whole index, which at a year of readings is a noticeable pause every half minute.
+     */
+    @Query(
+        "WITH RECURSIVE r(id) AS (SELECT MIN(ringId) FROM device_state UNION ALL " +
+            "SELECT (SELECT MIN(ringId) FROM device_state WHERE ringId > r.id) FROM r WHERE r.id IS NOT NULL) " +
+            "SELECT id FROM r WHERE id IS NOT NULL",
+    )
+    suspend fun readingRings(): List<String>
+
+    @Query("DELETE FROM step_quarters WHERE ringId NOT IN (:rings)")
+    suspend fun deleteStepQuartersExcept(rings: List<String>)
+
+    @Query(
+        "SELECT * FROM step_quarters WHERE ringId = :ringId AND startMillis >= :from AND startMillis < :to " +
+            "ORDER BY startMillis",
+    )
+    suspend fun stepQuartersForRing(ringId: String, from: Long, to: Long): List<StepQuarterEntity>
+
+    @Query("SELECT * FROM step_quarters WHERE startMillis >= :from AND startMillis < :to ORDER BY startMillis")
+    suspend fun stepQuartersBetween(from: Long, to: Long): List<StepQuarterEntity>
+
+    @Query("SELECT * FROM step_quarters WHERE startMillis >= :from AND startMillis < :to ORDER BY startMillis")
+    fun stepQuartersFlow(from: Long, to: Long): Flow<List<StepQuarterEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertStepQuarters(rows: List<StepQuarterEntity>)
+
+    @Query("DELETE FROM step_quarters WHERE ringId = :ringId AND startMillis >= :from AND startMillis < :to")
+    suspend fun deleteStepQuarters(ringId: String, from: Long, to: Long)
+
+    /** Swap one ring's quarters in a range for freshly derived ones, atomically. */
+    @Transaction
+    suspend fun replaceStepQuarters(ringId: String, from: Long, to: Long, rows: List<StepQuarterEntity>) {
+        deleteStepQuarters(ringId, from, to)
+        if (rows.isNotEmpty()) insertStepQuarters(rows)
+    }
 }
 
 /** Aggregate over a window, computed in SQL so the UI never walks the whole table. */
