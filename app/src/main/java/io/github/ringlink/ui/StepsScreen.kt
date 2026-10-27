@@ -44,7 +44,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Steps as tables and charts, over the whole period of use.
@@ -100,8 +100,9 @@ private fun TodayStepsCard(v: StepsView, onFullDayHours: (Int) -> Unit) {
         }
         Text(
             "Steps reach the phone only while it is connected to a ring on a finger. \"—\" is an " +
-                "hour nobody heard, not an hour without walking; \"2/4\" is an hour heard for two of " +
-                "its four quarters. Averages leave out days heard for less than a full day.",
+                "hour nobody heard, not an hour without walking; ◔ ◑ ◕ mark an hour heard for a " +
+                "quarter, half or three quarters of it. Averages leave out days heard for less than " +
+                "a full day.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -260,7 +261,7 @@ private fun WeekCard(v: StepsView) {
                     if (d.heard) Cell(d.steps.grouped(), dim = !full) else Cell("—", dim = true),
                     Cell(if (d.heard) hoursOf(d.heardQuarters) else "", dim = !full),
                     Cell(if (d.heard) percent(d.steps, v.goal) else "", dim = !full),
-                    wd.peak?.let { Cell(hourLabel(it.hour), note = it.steps.grouped()) } ?: Cell(""),
+                    wd.peak?.let { Cell(hourLabel(it.hour), note = "· ${it.steps.grouped()}") } ?: Cell(""),
                 ),
                 weights,
                 shaded = i == selected,
@@ -298,7 +299,7 @@ private fun MonthCard(m: MonthView, v: StepsView) {
             Swatch(ChartColors.steps.copy(alpha = 0.35f), "Partly heard")
         }
         Text(
-            "Dashed line: goal · solid line: average per full day",
+            "Dashed line: goal · solid line: average per full day, over the days heard in full",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -387,7 +388,7 @@ private fun AllTimeCard(a: AllTimeView, v: StepsView) {
                     Cell(p.total.grouped()),
                     Cell(p.averagePerFullDay?.grouped() ?: "—", dim = p.averagePerFullDay == null),
                     Cell("${p.fullDays}"),
-                    p.best?.let { Cell(it.steps.grouped(), note = "${it.date.dayOfMonth}") } ?: Cell(""),
+                    p.best?.let { Cell(it.steps.grouped(), note = "· ${it.date.dayOfMonth}") } ?: Cell(""),
                 ),
                 weights,
                 shaded = i % 2 == 1,
@@ -413,6 +414,8 @@ private fun PeriodLine(p: PeriodSteps, v: StepsView) {
 
 private data class Cell(
     val text: String,
+    /** Drawn at full size beside the text, dimmed — for symbols too small to read as a note. */
+    val mark: String? = null,
     val note: String? = null,
     val dim: Boolean = false,
     val dots: List<Color> = emptyList(),
@@ -452,6 +455,7 @@ private fun TableRow(
                 Text(
                     buildAnnotatedString {
                         append(cell.text)
+                        cell.mark?.let { withStyle(SpanStyle(color = dimColor)) { append(" $it") } }
                         cell.note?.let { withStyle(SpanStyle(fontSize = 9.sp, color = dimColor)) { append(" $it") } }
                     },
                     style = style,
@@ -490,11 +494,18 @@ private fun ringDots(d: DaySteps, v: StepsView): List<Color> =
 private fun hourCell(h: HourSteps?): Cell = when {
     h == null -> Cell("")
     !h.heard -> Cell("—", dim = true)
-    else -> Cell(h.steps.grouped(), note = if (h.heardQuarters < h.quarters.size) "${h.heardQuarters}/${h.quarters.size}" else null)
+    else -> Cell(h.steps.grouped(), mark = if (h.heardQuarters < h.quarters.size) pie(h.heardQuarters, h.quarters.size) else null)
 }
 
+/**
+ * How much of an hour was heard, as a quarter-filled circle. A fraction like "1/4" next to a count
+ * reads as part of the number — "35 1/4" looks like thirty-five and a quarter.
+ */
+private fun pie(heard: Int, of: Int): String =
+    when ((heard * 4.0 / of).roundToInt().coerceIn(1, 3)) { 1 -> "◔"; 2 -> "◑"; else -> "◕" }
+
 private fun spanCell(s: Span): Cell =
-    if (!s.heard) Cell("—", dim = true) else Cell(s.steps.grouped(), note = hoursOf(s.heardQuarters))
+    if (!s.heard) Cell("—", dim = true) else Cell(s.steps.grouped(), note = "· ${hoursOf(s.heardQuarters)}")
 
 /** "By 14:30" for both days, only as far as each was heard; a day nobody heard is not a zero. */
 private fun byNowLine(until: String, today: Span, yesterday: Span): String = when {

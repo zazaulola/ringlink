@@ -211,13 +211,21 @@ fun BarChart(
             }
         }
 
+        // Labelled at the right end, goal above its line and average below its own, so the two stay
+        // apart even when the lines all but coincide.
         goal?.let {
             drawLine(
                 goalColor, Offset(axis, y(it)), Offset(size.width, y(it)), strokeWidth = 2f,
                 pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f)),
             )
+            val text = measurer.measure("goal", labelStyle.copy(color = goalColor))
+            drawText(text, topLeft = Offset(size.width - text.size.width, y(it) - text.size.height - 1.dp.toPx()))
         }
-        average?.let { drawLine(averageColor, Offset(axis, y(it)), Offset(size.width, y(it)), strokeWidth = 1.5f) }
+        average?.let {
+            drawLine(averageColor, Offset(axis, y(it)), Offset(size.width, y(it)), strokeWidth = 1.5f)
+            val text = measurer.measure("avg", labelStyle)
+            drawText(text, topLeft = Offset(size.width - text.size.width, y(it) + 1.dp.toPx()))
+        }
     }
 }
 
