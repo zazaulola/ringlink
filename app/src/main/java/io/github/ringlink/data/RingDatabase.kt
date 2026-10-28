@@ -8,8 +8,14 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [EpochEntity::class, SportEntity::class, DeviceStateEntity::class, StepQuarterEntity::class],
-    version = 5,
+    entities = [
+        EpochEntity::class,
+        SportEntity::class,
+        DeviceStateEntity::class,
+        StepQuarterEntity::class,
+        WeatherHourEntity::class,
+    ],
+    version = 6,
     exportSchema = false,
 )
 abstract class RingDatabase : RoomDatabase() {
@@ -28,6 +34,7 @@ abstract class RingDatabase : RoomDatabase() {
                 MIGRATION_2_3,
                 MIGRATION_3_4,
                 migrateToStepQuarters(Settings(context)),
+                migrateToWear(Settings(context)),
             )
                 .build()
                 .also { instance = it }
@@ -80,6 +87,23 @@ abstract class RingDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS `index_step_quarters_startMillis` ON `step_quarters` (`startMillis`)",
                 )
                 settings.stepsPhoneClockPending = true
+            }
+        }
+
+        /**
+         * Keeps the link's signal strength with each reading, and the weather a weather app sends.
+         * The column is nullable with no default, matching the entity, for the reason given at
+         * MIGRATION_3_4. Whether a quarter was worn is judged differently from this version on,
+         * so the stored quarters are rebuilt.
+         */
+        private fun migrateToWear(settings: Settings) = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE device_state ADD COLUMN rssi INTEGER")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `weather_hours` (`hourStart` INTEGER NOT NULL, " +
+                        "`tempC` REAL NOT NULL, `receivedAt` INTEGER NOT NULL, PRIMARY KEY(`hourStart`))",
+                )
+                settings.invalidateStepQuarters()
             }
         }
 

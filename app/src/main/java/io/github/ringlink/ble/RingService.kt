@@ -12,10 +12,13 @@ import android.os.IBinder
 import io.github.ringlink.L
 import io.github.ringlink.data.Ring
 import io.github.ringlink.data.RingDatabase
+import io.github.ringlink.data.StepStore
+import io.github.ringlink.weather.WeatherStore
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
 import io.github.ringlink.health.HealthExporter
 import io.github.ringlink.protocol.Descriptor
+import io.github.ringlink.protocol.EpochRecord
 import io.github.ringlink.protocol.Opcodes
 import io.github.ringlink.protocol.LiveMeasurement
 import io.github.ringlink.protocol.LiveMode
@@ -27,6 +30,7 @@ import io.github.ringlink.trigger.CallMonitor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -34,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -72,6 +77,8 @@ class RingService : Service() {
     private var watchdogJob: Job? = null
     /** The ring a sync session is running on, if any. */
     @Volatile private var sessionRing: String? = null
+    private val lastRssiAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val stepStore by lazy { StepStore(RingDatabase.get(this).dao(), settings) }
     private var callMonitor: CallMonitor? = null
     private var callAlertJob: Job? = null
     private var notificationStarted = false
@@ -95,6 +102,8 @@ class RingService : Service() {
         startForegroundNotification()
         publishRings()
         scope.launch { restoreCaseHistory() }
+        WeatherStore.enabled = settings.weatherEnabled
+        scope.launch { runCatching { WeatherStore(RingDatabase.get(this@RingService).dao()).warm() } }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -319,14 +328,18 @@ class RingService : Service() {
      * reached the battery check or the charger watch.
      */
     private suspend fun handleDescriptor(address: String, d: Descriptor) {
-        repo.sinkFor(address).onDescriptor(d)
+        val rssi = rssiFor(address)
+        // A reading already taken off the link is stored even if the loop that took it is being
+        // cancelled — by a sync starting, say — or it would simply be lost.
+        withContext(NonCancellable) { repo.recordDescriptor(address, d, rssi) }
         lastDescriptorAt[address] = System.currentTimeMillis()
         val charging = repo.isCharging(address)
         updateRing(address) {
             it.copy(
                 battery = d.batteryPercent,
                 onCharger = charging,
-                worn = d.looksWorn,
+                worn = repo.isWorn(address),
+                wornNow = repo.isWornNow(address),
                 skinTemp = d.skinTempA,
                 caseBattery = d.caseBatteryPercent,
                 caseCharging = d.caseCharging,
@@ -334,6 +347,26 @@ class RingService : Service() {
         }
         checkBattery(address, d.batteryPercent, charging)
         watchCharger(address, d, charging)
+    }
+
+    /**
+     * The link's signal strength, read at most every [RSSI_EVERY_MS] per ring and never while a
+     * session — a sync or a measurement — owns the link: it is a GATT operation of its own, and the
+     * session's writes come first.
+     */
+    private suspend fun rssiFor(address: String): Int? {
+        if (sessionRing == address || measuring.isLocked) return null
+        val now = System.currentTimeMillis()
+        val last = lastRssiAt[address]
+        if (last != null && now - last < RSSI_EVERY_MS) return null
+        lastRssiAt[address] = now
+        return try {
+            clientFor(address).readRssi()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /**
@@ -365,6 +398,12 @@ class RingService : Service() {
         val base = repo.sinkFor(address)
         return object : RecordSink by base {
             override suspend fun onDescriptor(descriptor: Descriptor) = handleDescriptor(address, descriptor)
+
+            override suspend fun onEpochs(channel: Int, records: List<EpochRecord>) {
+                base.onEpochs(channel, records)
+                // Stored first, then noted: these epochs' pulse will re-judge the quarters they cover.
+                records.minOfOrNull { it.counter }?.let { settings.notePulseEpochs(address, it) }
+            }
         }
     }
 
@@ -546,7 +585,9 @@ class RingService : Service() {
         // Prefer rings that look worn; fall back to any that is merely not charging, so a ring
         // whose temperature has not arrived yet is not passed over.
         val notCharging = connected.filterNot { state.value.ringOrNull(it.address)?.onCharger == true }
-        val worn = notCharging.filter { state.value.ringOrNull(it.address)?.worn == true }
+        // By what the rings say now, not the held state: a ring just taken off keeps that for a
+        // while, and would take the buzz from the one on the finger.
+        val worn = notCharging.filter { state.value.ringOrNull(it.address)?.wornNow == true }
             .ifEmpty { notCharging }
         val targets = worn.ifEmpty { connected }
 
@@ -616,6 +657,7 @@ class RingService : Service() {
                 settings.epochAnchor = clock.epoch()
                 settings.epochCalibrated = clock.isCalibrated()
                 settings.lastSyncAt = System.currentTimeMillis()
+                rederivePending()
                 state.value = state.value.copy(
                     status = "Synced $total records",
                     lastSyncAt = settings.lastSyncAt,
@@ -633,6 +675,30 @@ class RingService : Service() {
                 }
             } finally {
                 state.value = state.value.copy(syncing = false)
+            }
+        }
+    }
+
+    /**
+     * Re-judge the quarters that new epochs cover, by their pulse.
+     *
+     * After the rings' sessions, when their links are attended again — it can wait on a rebuild
+     * holding the step store. What is pending is kept in settings until done, so a sync cut short
+     * leaves it for the next.
+     */
+    private suspend fun rederivePending() {
+        for (ring in settings.rings) {
+            val counter = settings.pendingRederive(ring.address) ?: continue
+            // Back far enough for an epoch's reach, the wear held across unsure readings, and the
+            // quarter the epoch falls in.
+            val from = clock.toEpochMillis(counter) - REDERIVE_MARGIN_MS
+            try {
+                stepStore.rederive(ring.address, from)
+                settings.clearRederive(ring.address, counter)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                L.e("step quarters not re-derived for ${ring.shortName}", e)
             }
         }
     }
@@ -670,8 +736,18 @@ class RingService : Service() {
                 L.e("auth failed for ${ring.shortName}")
                 return 0
             }
+            val epochBefore = clock.epoch()
             val stats = session.syncHistory()
             L.i("${ring.shortName}: ${stats.epochs} epochs, ${stats.pages} pages")
+            // Saved now, not after every ring: the pulse is matched to readings through this
+            // anchor, and the re-derivation that follows reads it from settings.
+            settings.epochAnchor = clock.epoch()
+            settings.epochCalibrated = clock.isCalibrated()
+            if (clock.epoch() != epochBefore) {
+                // Every epoch moved in time, so every pulse match stored so far is wrong.
+                L.i("epoch anchor moved; step quarters will be rebuilt")
+                settings.invalidateStepQuarters()
+            }
             stats.epochs
         } finally {
             sessionRing = null
@@ -919,8 +995,10 @@ class RingService : Service() {
         val connected: Boolean = false,
         val battery: Int? = null,
         val onCharger: Boolean = false,
-        /** Judged from skin temperature, not stated by the ring — see Descriptor.looksWorn. */
+        /** Judged from temperature, steps and the surroundings, not stated by the ring — see WearRules. */
         val worn: Boolean = false,
+        /** Fresh evidence of a finger, minutes old at most — what buzzing goes by. */
+        val wornNow: Boolean = false,
         val skinTemp: Double? = null,
         val info: DeviceInfo? = null,
         val caseBattery: Int? = null,
@@ -987,6 +1065,8 @@ class RingService : Service() {
          * normally come every 30-60 s, so this is several missed ones, not one late one.
          */
         private const val TELEMETRY_STALE_MS = 10 * 60_000L
+        private const val RSSI_EVERY_MS = 20_000L
+        private const val REDERIVE_MARGIN_MS = 45 * 60_000L
 
         /** A sync used only to wake a silent ring, at most this often. */
         private const val FALLBACK_SYNC_MIN_GAP_MS = 30 * 60_000L

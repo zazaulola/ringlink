@@ -96,6 +96,18 @@
             android:name=".watch.CheckInReceiver"
             android:exported="false" />
 
+        <!-- Weather shared by a weather app (Breezy Weather, QuickWeather) in Gadgetbridge's format,
+             so this app needs no network access of its own. Enabled only once weather is switched
+             on in the app; disabled, weather apps do not list RingLink as a recipient at all. -->
+        <receiver
+            android:name=".weather.WeatherReceiver"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="nodomain.freeyourgadget.gadgetbridge.ACTION_GENERIC_WEATHER" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".ble.BootReceiver"
             android:exported="true">

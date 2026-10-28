@@ -30,6 +30,10 @@ object SettingsSnapshot {
             Settings.KEY_STEPS_PENDING,
             Settings.KEY_STEP_QUARTERS_GEN,
             Settings.KEY_STEP_QUARTERS_BUILT,
+            Settings.KEY_REDERIVE + "*",
+            // What the last weather report said belongs to this phone's weather app.
+            Settings.KEY_WEATHER_LOCATION,
+            Settings.KEY_WEATHER_AT,
         ),
         // The watch belongs to one episode — a tick bite, say. Restored on another phone it would
         // come back switched on with no alarm scheduled, which is worse than off. Its interval

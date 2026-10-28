@@ -62,4 +62,16 @@ class BackupFormatTest {
         )
         assertEquals(m, BackupManifest.parse(m.toJson()))
     }
+
+    @Test fun `weather hours survive a round trip`() {
+        val w = io.github.ringlink.data.WeatherHourEntity(1_793_000_000_000L, -3.15, 1_792_999_000_000L)
+        assertEquals(w, BackupFormat.decodeWeather(BackupFormat.encode(w)))
+    }
+
+    @Test fun `signal strength survives a round trip, and old rows have none`() {
+        val d = io.github.ringlink.data.DeviceStateEntity("F749", 1L, 50, 10, 33.0, 33.1, 3900, false, rssi = -61)
+        assertEquals(-61, BackupFormat.decodeDeviceState(BackupFormat.encode(d)).rssi)
+        val old = BackupFormat.encode(d.copy(rssi = null))
+        assertEquals(null, BackupFormat.decodeDeviceState(old).rssi)
+    }
 }

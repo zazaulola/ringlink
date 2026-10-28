@@ -117,6 +117,38 @@ class Settings(context: Context) {
         get() = prefs.getInt(KEY_FULL_DAY_HOURS, 13)
         set(v) = prefs.edit { putInt(KEY_FULL_DAY_HOURS, v.coerceIn(1, 24)) }
 
+    /**
+     * The oldest epoch counter a sync stored for a ring whose quarters have not yet been judged by
+     * its pulse. Kept here rather than in memory, so a sync cut short still has them re-derived by
+     * the next one; a counter rather than a time, so a corrected clock anchor applies to it.
+     */
+    fun pendingRederive(ringId: String): Long? =
+        prefs.getLong(KEY_REDERIVE + ringId, Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }
+
+    fun notePulseEpochs(ringId: String, oldestCounter: Long) {
+        val current = pendingRederive(ringId)
+        if (current == null || oldestCounter < current) prefs.edit { putLong(KEY_REDERIVE + ringId, oldestCounter) }
+    }
+
+    fun clearRederive(ringId: String, upTo: Long) {
+        // Only if nothing older arrived meanwhile.
+        if (pendingRederive(ringId)?.let { it >= upTo } == true) prefs.edit { remove(KEY_REDERIVE + ringId) }
+    }
+
+    /** Take the outdoor temperature from a weather app's broadcast; RingLink itself stays offline. */
+    var weatherEnabled: Boolean
+        get() = prefs.getBoolean(KEY_WEATHER, false)
+        set(v) = prefs.edit { putBoolean(KEY_WEATHER, v) }
+
+    /** Where the last report was for, as the weather app named it. */
+    var weatherLocation: String?
+        get() = prefs.getString(KEY_WEATHER_LOCATION, null)
+        set(v) = prefs.edit { putString(KEY_WEATHER_LOCATION, v) }
+
+    var weatherReceivedAt: Long
+        get() = prefs.getLong(KEY_WEATHER_AT, 0)
+        set(v) = prefs.edit { putLong(KEY_WEATHER_AT, v) }
+
     var exportToHealthConnect: Boolean
         get() = prefs.getBoolean(KEY_EXPORT_HC, true)
         set(v) = prefs.edit { putBoolean(KEY_EXPORT_HC, v) }
@@ -165,6 +197,10 @@ class Settings(context: Context) {
         const val KEY_STEP_QUARTERS_GEN = "step_quarters_generation"
         const val KEY_STEP_QUARTERS_BUILT = "step_quarters_built_generation"
         const val KEY_FULL_DAY_HOURS = "full_day_hours"
+        const val KEY_REDERIVE = "rederive_from_"
+        const val KEY_WEATHER = "weather_enabled"
+        const val KEY_WEATHER_LOCATION = "weather_location"
+        const val KEY_WEATHER_AT = "weather_received_at"
         const val KEY_MUTED = "muted_packages"
         const val KEY_QUIET_FROM = "quiet_from"
         const val KEY_QUIET_TO = "quiet_to"

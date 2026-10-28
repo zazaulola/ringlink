@@ -37,6 +37,7 @@ something the vendor app deliberately does not do, since it restricts haptics to
 | **Sleep** | Estimated nights with the vitals measured during each — see below |
 | **Export** | Every reading as CSV, with raw ring counters alongside timestamps |
 | **Charging case** | Its charge and whether it is plugged in, remembered after the ring is taken out; a notice when the spare ring is charged and when the case is about to go flat |
+| **Worn or not** | Judged by the ring's own pulse where history has it, and live by skin temperature, steps and the surroundings — a docked ring serves as a room thermometer, and the weather can come from a weather app — so a cold finger on a winter walk still counts as worn. The link's signal strength is recorded with each reading, to be calibrated against the pulse as a further clue; it does not count yet |
 | **Several rings at once** | Keep a spare on the charger and swap when the worn one runs low — every ring stays connected, and only the ones actually being worn are buzzed |
 | **Keeps it local** | Everything lands in SQLite first; Health Connect export is a separate, retryable step |
 
@@ -150,7 +151,9 @@ vendor app. If you want a new capability, capture the vendor app performing it a
 
 Your data stays on your phone: the ring talks to this app over Bluetooth, the app writes to a local
 database and to Health Connect. There is no server, no analytics and no network permission in the
-manifest at all. Health Connect stamps records with this app as their origin, and you can inspect or
+manifest at all. Weather, if you switch it on, comes from a weather app you install yourself
+(Breezy Weather or QuickWeather), which hands it to RingLink inside the phone; RingLink never goes
+online for it. Health Connect stamps records with this app as their origin, and you can inspect or
 delete them from Health Connect at any time.
 
 ## Credits

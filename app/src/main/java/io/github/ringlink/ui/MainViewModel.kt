@@ -19,6 +19,9 @@ import io.github.ringlink.backup.BackupJobs
 import io.github.ringlink.data.CsvExport
 import io.github.ringlink.data.Ring
 import io.github.ringlink.data.StepStore
+import io.github.ringlink.data.WeatherHourEntity
+import io.github.ringlink.weather.WeatherReceiver
+import io.github.ringlink.weather.WeatherStore
 import io.github.ringlink.data.WornSpan
 import io.github.ringlink.data.RingNames
 import io.github.ringlink.data.Coverage
@@ -44,6 +47,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -93,6 +98,9 @@ data class UiState(
     val daysSinceExposure: Long? = null,
     val checkInPending: Boolean = false,
     val lastCheckIn: Long = 0,
+    val weatherEnabled: Boolean = false,
+    val weatherLocation: String? = null,
+    val weatherReceivedAt: Long = 0,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -306,8 +314,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var refreshJob: kotlinx.coroutines.Job? = null
 
     fun refresh() {
-        // A restore may have brought back a different goal or full-day threshold.
+        // A restore may have brought back a different goal or full-day threshold, or weather on.
         steps.prefsChanged()
+        WeatherReceiver.sync(getApplication())
         refreshBackup()
         val app = getApplication<Application>()
         refreshJob?.cancel()
@@ -336,6 +345,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     daysSinceExposure = watch.daysSinceExposure,
                     checkInPending = watch.pendingSince != 0L,
                     lastCheckIn = watch.lastCheckInAt,
+                    weatherEnabled = settings.weatherEnabled,
+                    weatherLocation = settings.weatherLocation,
+                    weatherReceivedAt = settings.weatherReceivedAt,
                 )
             }
         }
@@ -448,6 +460,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         steps.prefsChanged()
         refresh()
     }
+
+    fun setWeatherEnabled(on: Boolean) {
+        settings.weatherEnabled = on
+        WeatherStore.enabled = on
+        if (!on) {
+            // A weather app drops RingLink from its list once the receiver is off, so switched back
+            // on it needs setting up again — and the card should say so, not show an old report.
+            settings.weatherReceivedAt = 0
+            settings.weatherLocation = null
+        }
+        WeatherReceiver.sync(getApplication())
+        // History judged with the weather is judged again without it, and the other way round.
+        settings.invalidateStepQuarters()
+        if (on) viewModelScope.launch { runCatching { weather.warm() } }
+        _ui.update {
+            it.copy(weatherEnabled = on, weatherLocation = settings.weatherLocation, weatherReceivedAt = settings.weatherReceivedAt)
+        }
+    }
+
+    private val weather = WeatherStore(RingDatabase.get(app).dao())
+
+    /** A report lands in the receiver, not here; the card follows it as it comes. */
+    private val weatherPrefs = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Settings.KEY_WEATHER_AT || key == Settings.KEY_WEATHER_LOCATION) {
+            _ui.update {
+                it.copy(weatherLocation = settings.weatherLocation, weatherReceivedAt = settings.weatherReceivedAt)
+            }
+        }
+    }
+
+    init {
+        app.getSharedPreferences(Settings.FILE, Context.MODE_PRIVATE).registerOnSharedPreferenceChangeListener(weatherPrefs)
+    }
+
+    override fun onCleared() {
+        getApplication<Application>().getSharedPreferences(Settings.FILE, Context.MODE_PRIVATE)
+            .unregisterOnSharedPreferenceChangeListener(weatherPrefs)
+        super.onCleared()
+    }
+
+    /**
+     * The outdoor temperature now, from the last weather report, if one covers this hour or the
+     * one before. Re-read every few minutes so it moves on with the clock as well as with reports.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val outdoorNow: StateFlow<WeatherHourEntity?> = flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(5 * 60_000L)
+        }
+    }
+        .flatMapLatest { now ->
+            weather.atFlow(now).map {
+                it?.takeIf { h -> settings.weatherEnabled && now - h.hourStart < 2 * 3_600_000L && WeatherStore.usable(h.hourStart, h.receivedAt) }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun setEstimateSleep(on: Boolean) {
         settings.estimateSleep = on

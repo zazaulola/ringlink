@@ -1,6 +1,7 @@
 package io.github.ringlink.backup
 
 import io.github.ringlink.data.DeviceStateEntity
+import io.github.ringlink.data.WeatherHourEntity
 import io.github.ringlink.data.EpochEntity
 import io.github.ringlink.data.SportEntity
 import org.json.JSONObject
@@ -27,6 +28,11 @@ object BackupFormat {
     const val EPOCHS = "epochs.jsonl"
     const val DEVICE_STATE = "device_state.jsonl"
     const val SPORT = "sport.jsonl"
+    /**
+     * Optional: older backups have none, so it is not among [TABLES]. Kept because history is
+     * judged with it, and a past day's weather cannot be fetched again.
+     */
+    const val WEATHER = "weather_hours.jsonl"
 
     val TABLES = listOf(EPOCHS, DEVICE_STATE, SPORT)
 
@@ -76,6 +82,7 @@ object BackupFormat {
         .put("state", d.state)
         .putOpt("caseBattery", d.caseBattery)
         .putOpt("caseCharging", d.caseCharging)
+        .putOpt("rssi", d.rssi)
         .toString()
 
     fun decodeDeviceState(line: String): DeviceStateEntity = JSONObject(line).run {
@@ -91,7 +98,18 @@ object BackupFormat {
             state = optInt("state", 0),
             caseBattery = intOrNull("caseBattery"),
             caseCharging = if (has("caseCharging") && !isNull("caseCharging")) getBoolean("caseCharging") else null,
+            rssi = intOrNull("rssi"),
         )
+    }
+
+    fun encode(w: WeatherHourEntity): String = JSONObject()
+        .put("hour", w.hourStart)
+        .put("c", w.tempC)
+        .put("received", w.receivedAt)
+        .toString()
+
+    fun decodeWeather(line: String): WeatherHourEntity = JSONObject(line).run {
+        WeatherHourEntity(hourStart = getLong("hour"), tempC = getDouble("c"), receivedAt = getLong("received"))
     }
 
     fun encode(s: SportEntity): String = JSONObject()

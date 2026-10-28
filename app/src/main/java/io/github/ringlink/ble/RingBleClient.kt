@@ -38,6 +38,7 @@ class RingBleClient(private val context: Context) : RingTransport {
     private val readLock = Mutex()
     @Volatile private var pendingRead: Pair<UUID, CompletableDeferred<ByteArray?>>? = null
     private var pendingWrite: CompletableDeferred<Boolean>? = null
+    @Volatile private var pendingRssi: CompletableDeferred<Int?>? = null
     private var connected = CompletableDeferred<Boolean>()
     private var servicesReady = CompletableDeferred<Boolean>()
 
@@ -123,6 +124,11 @@ class RingBleClient(private val context: Context) : RingTransport {
 
         override fun onCharacteristicWrite(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
             pendingWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            // LE reports -127..20 dBm; 127 is the controller saying it has no value.
+            pendingRssi?.complete(rssi.takeIf { status == BluetoothGatt.GATT_SUCCESS && it in -127..20 })
         }
 
         // API 33+ delivers the value as a parameter; older devices read it off the characteristic.
@@ -236,6 +242,24 @@ class RingBleClient(private val context: Context) : RingTransport {
     }
 
     /**
+     * The link's signal strength in dBm, or null when it cannot be read just now.
+     *
+     * Not a GATT operation — the stack answers it from the controller, without the busy flag that
+     * makes writes wait for each other — so it stays off the write lock: a buzz never queues
+     * behind it. Reads are serialised across rings instead, one request in the stack at a time.
+     */
+    suspend fun readRssi(): Int? = rssiLock.withLock {
+        val g = gatt ?: return@withLock null
+        val slot = CompletableDeferred<Int?>()
+        pendingRssi = slot
+        try {
+            if (g.readRemoteRssi()) withTimeoutOrNull(RSSI_TIMEOUT_MS) { slot.await() } else null
+        } finally {
+            pendingRssi = null
+        }
+    }
+
+    /**
      * Keep trying until the ring takes the command.
      *
      * Used for one-shot commands like a buzz, which have no stream to recover them: the sync engine
@@ -306,6 +330,10 @@ class RingBleClient(private val context: Context) : RingTransport {
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val WRITE_TIMEOUT_MS = 5_000L
         private const val READ_TIMEOUT_MS = 3_000L
+        private const val RSSI_TIMEOUT_MS = 500L
+
+        /** One RSSI read at a time across every ring's connection. */
+        private val rssiLock = Mutex()
 
         private val DIS_SERVICE: UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
         private val DIS_MODEL: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")

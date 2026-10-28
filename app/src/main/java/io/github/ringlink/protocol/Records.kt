@@ -32,23 +32,15 @@ data class Descriptor(
     val caseBatteryPercent: Int? get() = if (caseByte == 0xff) null else caseByte and 0x7f
     val caseCharging: Boolean get() = inChargingCase && (caseByte and 0x80) != 0
 
-    /**
-     * Whether the ring looks like it is on a finger, judged by temperature.
-     *
-     * A worn ring equilibrates towards skin, an unworn one towards the room, and the two are far
-     * enough apart to tell — measured here, 36.0 C on a hand against 26.3 C on a table. It is a
-     * judgement rather than something the ring states, so it is reported as such.
-     */
-    val looksWorn: Boolean get() = skinTempA >= WORN_SKIN_TEMP_C
-
     companion object {
         const val LENGTH = 19
 
         /**
-         * Above this the ring is taken to be on a finger.
+         * From here up a reading is a warm finger's — what skin-temperature records are made of.
          *
-         * Deliberately nearer room temperature than skin: a cold hand in a cold room should still
-         * read as worn, and the cost of being wrong in that direction is only a label.
+         * Not the test for whether the ring is worn: a cold finger outdoors reads 15 °C and is
+         * still a finger. That judgement is WearRules'. A cold finger's reading says more about
+         * the weather than about the body, so temperature records keep to warm ones.
          */
         const val WORN_SKIN_TEMP_C = 30.0
 

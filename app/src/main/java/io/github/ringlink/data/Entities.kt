@@ -67,6 +67,13 @@ data class DeviceStateEntity(
     /** Whether the case itself was plugged in; null while the ring is out of the case. */
     val caseCharging: Boolean? = null,
     val exportedAt: Long? = null,
+    /**
+     * Signal strength of the link when the reading arrived, in dBm; null when not read.
+     *
+     * Kept to learn whether it tells a ring on a moving hand from one lying still — a question the
+     * data has to answer, which it cannot if the value is thrown away.
+     */
+    val rssi: Int? = null,
 )
 
 /**
@@ -93,3 +100,17 @@ data class StepReading(
     val onCharger: Boolean,
     val skinTempA: Double,
 )
+
+/** The temperature outdoors in one hour, as a weather app last reported it. */
+@Entity(tableName = "weather_hours", primaryKeys = ["hourStart"])
+data class WeatherHourEntity(
+    val hourStart: Long,
+    val tempC: Double,
+    val receivedAt: Long,
+)
+
+/** An epoch's counter and whether the ring measured a pulse in it. */
+data class PulseEpoch(val counter: Long, val heartRate: Int?)
+
+/** A docked ring's temperature — the room's, give or take the charger's warmth. */
+data class DockedReading(val recordedAt: Long, val skinTempA: Double)

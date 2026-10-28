@@ -370,6 +370,36 @@ private fun RingLinkApp(vm: MainViewModel = viewModel()) {
                 }
             }
 
+            SectionCard("Weather") {
+                ToggleRow("Take the weather from a weather app", ui.weatherEnabled, vm::setWeatherEnabled)
+                Text(
+                    "Tells a ring left out in the cold from a cold finger on a walk. RingLink stays " +
+                        "offline: a weather app fetches the weather and hands it over inside the phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (ui.weatherEnabled) {
+                    val setup = "Install Breezy Weather (F-Droid) and add your city, then in Breezy: " +
+                        "Settings → External modules → Data sharing → Send Gadgetbridge data, and tick " +
+                        "RingLink. QuickWeather needs only its Gadgetbridge option switched on."
+                    if (ui.weatherReceivedAt == 0L) {
+                        Text("Nothing received yet. $setup", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Text(
+                            "Last report: ${ui.weatherLocation ?: "unnamed place"}, " +
+                                java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault())
+                                    .format(java.util.Date(ui.weatherReceivedAt)),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (System.currentTimeMillis() - ui.weatherReceivedAt > 6 * 3_600_000L) {
+                            Text(
+                                "No report for over six hours. Check the weather app still sends to RingLink. $setup",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+
             SectionCard("Watch") {
                 ToggleRow("Periodic check-in", ui.watchEnabled, vm::setWatchEnabled)
                 Text(
@@ -461,6 +491,7 @@ private fun RingRow(
 private fun TodayCard(vm: MainViewModel) {
     val steps by vm.stepsToday.collectAsState()
     val resting by vm.restingHeartRate.collectAsState()
+    val outdoor by vm.outdoorNow.collectAsState()
     val ui by vm.ui.collectAsState()
 
     LaunchedEffect(Unit) { vm.refreshToday() }
@@ -478,6 +509,14 @@ private fun TodayCard(vm: MainViewModel) {
         )
         resting?.let {
             Text("Resting heart rate  $it bpm", style = MaterialTheme.typography.bodyMedium)
+        }
+        if (ui.weatherEnabled) {
+            outdoor?.let {
+                Text(
+                    "Outside  ${"%.0f".format(it.tempC)} °C" + (ui.weatherLocation?.let { place -> " · $place" } ?: ""),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
         Text(
             "Counted while the phone is connected to the ring: the ring tallies steps a quarter-hour " +

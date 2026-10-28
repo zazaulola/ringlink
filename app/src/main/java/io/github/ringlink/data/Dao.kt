@@ -279,6 +279,32 @@ interface RingDao {
     @Query("DELETE FROM step_quarters WHERE ringId = :ringId AND startMillis >= :from AND startMillis < :to")
     suspend fun deleteStepQuarters(ringId: String, from: Long, to: Long)
 
+    @Query(
+        "SELECT counter, heartRate FROM epochs WHERE ringId = :ringId AND counter >= :from AND counter < :to " +
+            "ORDER BY counter",
+    )
+    suspend fun pulseEpochs(ringId: String, from: Long, to: Long): List<PulseEpoch>
+
+    @Query(
+        "SELECT recordedAt, skinTempA FROM device_state WHERE ringId = :ringId AND recordedAt >= :from " +
+            "AND recordedAt < :to AND onCharger = 1 ORDER BY recordedAt",
+    )
+    suspend fun dockedReadings(ringId: String, from: Long, to: Long): List<DockedReading>
+
+    // --- weather ---------------------------------------------------------------------------------
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertWeather(rows: List<WeatherHourEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertWeatherIfAbsent(rows: List<WeatherHourEntity>): List<Long>
+
+    @Query("SELECT * FROM weather_hours WHERE hourStart >= :from AND hourStart < :to ORDER BY hourStart")
+    suspend fun weatherBetween(from: Long, to: Long): List<WeatherHourEntity>
+
+    @Query("SELECT * FROM weather_hours WHERE hourStart <= :at ORDER BY hourStart DESC LIMIT 1")
+    fun weatherAtFlow(at: Long): Flow<WeatherHourEntity?>
+
     /** Swap one ring's quarters in a range for freshly derived ones, atomically. */
     @Transaction
     suspend fun replaceStepQuarters(ringId: String, from: Long, to: Long, rows: List<StepQuarterEntity>) {

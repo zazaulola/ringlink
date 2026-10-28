@@ -11,6 +11,7 @@ import io.github.ringlink.data.DeviceStateEntity
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.RingNames
 import io.github.ringlink.data.Settings
+import io.github.ringlink.data.WeatherHourEntity
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
@@ -35,6 +36,7 @@ interface BackupSource {
     /** Pages in primary-key order: by ring, then time. */
     suspend fun deviceStatesAfter(afterRing: String, afterAt: Long, limit: Int): List<DeviceStateEntity>
     suspend fun allSport(): List<SportEntity>
+    suspend fun allWeather(): List<WeatherHourEntity> = emptyList()
     fun settingsJson(): String
     suspend fun ringNames(): Map<String, String>
 }
@@ -47,6 +49,7 @@ class AppBackupSource(private val context: Context) : BackupSource {
     override suspend fun deviceStatesAfter(afterRing: String, afterAt: Long, limit: Int) =
         dao.deviceStatesAfter(afterRing, afterAt, limit)
     override suspend fun allSport() = dao.allSport()
+    override suspend fun allWeather() = dao.weatherBetween(Long.MIN_VALUE, Long.MAX_VALUE)
     // Compact on purpose: every entry is checked line by line on restore, and an indented
     // settings file spread over many lines once made every backup fail that check.
     override fun settingsJson(): String = SettingsSnapshot.capture(context).toString()
@@ -95,6 +98,9 @@ class BackupWriter(private val source: BackupSource, private val appVersion: Str
         }
         files[BackupFormat.SPORT] = entry(zip, BackupFormat.SPORT) { emit ->
             source.allSport().forEach { emit(BackupFormat.encode(it)) }
+        }
+        files[BackupFormat.WEATHER] = entry(zip, BackupFormat.WEATHER) { emit ->
+            source.allWeather().forEach { emit(BackupFormat.encode(it)) }
         }
         val settings = source.settingsJson()
         files[BackupFormat.SETTINGS] = entry(zip, BackupFormat.SETTINGS) { emit -> emit(settings) }
@@ -288,6 +294,12 @@ class Restorer(private val context: Context) {
         // not looked at again unless rebuilt. Asked for before the first row goes in, so a restore
         // cut short still gets its rows derived; and again after, so a rebuild that ran meanwhile
         // and passed their weeks does not count as covering them.
+        // Weather before readings, so the rebuild that follows judges them with it. Only hours not
+        // already here: rows are only ever added, and this phone's own reports are newer.
+        backup.lines(BackupFormat.WEATHER).map(BackupFormat::decodeWeather).chunked(CHUNK).forEach { chunk ->
+            dao.insertWeatherIfAbsent(chunk)
+        }
+
         val local = Settings(context)
         local.invalidateStepQuarters()
         backup.lines(BackupFormat.DEVICE_STATE).map(BackupFormat::decodeDeviceState).chunked(CHUNK).forEach { chunk ->
