@@ -114,6 +114,9 @@ interface RingDao {
     @Query("SELECT * FROM device_state WHERE ringId = :ringId ORDER BY recordedAt DESC LIMIT 1")
     fun latestDeviceState(ringId: String): Flow<DeviceStateEntity?>
 
+    @Query("SELECT * FROM device_state WHERE ringId = :ringId ORDER BY recordedAt DESC LIMIT 1")
+    suspend fun latestDeviceStateNow(ringId: String): DeviceStateEntity?
+
     @Query("SELECT * FROM epochs WHERE counter BETWEEN :from AND :to ORDER BY counter")
     suspend fun epochsBetween(from: Long, to: Long): List<EpochEntity>
 

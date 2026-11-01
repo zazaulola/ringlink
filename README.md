@@ -38,6 +38,7 @@ something the vendor app deliberately does not do, since it restricts haptics to
 | **Export** | Every reading as CSV, with raw ring counters alongside timestamps |
 | **Charging case** | Its charge and whether it is plugged in, remembered after the ring is taken out; a notice when the spare ring is charged and when the case is about to go flat |
 | **Worn or not** | Judged by the ring's own pulse where history has it, and live by skin temperature, steps and the surroundings — a docked ring serves as a room thermometer, and the weather can come from a weather app — so a cold finger on a winter walk still counts as worn. The link's signal strength is recorded with each reading, to be calibrated against the pulse as a further clue; it does not count yet |
+| **Home-screen widget** | Each ring's charge and state — charging, charged, worn — and its charging case, with how long ago anything not current was seen; one line per ring at small sizes |
 | **Several rings at once** | Keep a spare on the charger and swap when the worn one runs low — every ring stays connected, and only the ones actually being worn are buzzed |
 | **Keeps it local** | Everything lands in SQLite first; Health Connect export is a separate, retryable step |
 

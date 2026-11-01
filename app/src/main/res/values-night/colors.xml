@@ -1,0 +1,7 @@
+<resources>
+    <color name="widget_bg">#E6202024</color>
+    <color name="widget_text">#E6E1E5</color>
+    <color name="widget_dim">#AAA6B0</color>
+    <color name="widget_low">#FF8A80</color>
+    <color name="widget_charging">#81C784</color>
+</resources>

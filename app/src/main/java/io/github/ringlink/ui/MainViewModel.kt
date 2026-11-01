@@ -306,6 +306,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val service: StateFlow<RingService.State> = RingService.observable
 
     init {
+        // The service holds the rings' links. Opening the app — from the widget saying it is not
+        // running, say — is the moment to make sure it does.
+        if (settings.rings.isNotEmpty()) runCatching { RingService.start(app) }
         repo.epochCount().onEach { n -> _ui.update { it.copy(storedEpochs = n) } }.launchIn(viewModelScope)
         repo.pendingExportCount().onEach { n -> _ui.update { it.copy(pendingExport = n) } }.launchIn(viewModelScope)
         refresh()

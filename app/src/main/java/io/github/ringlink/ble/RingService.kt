@@ -14,6 +14,7 @@ import io.github.ringlink.data.Ring
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.StepStore
 import io.github.ringlink.weather.WeatherStore
+import io.github.ringlink.widget.RingStatusWidget
 import io.github.ringlink.data.RingRepository
 import io.github.ringlink.data.Settings
 import io.github.ringlink.health.HealthExporter
@@ -136,6 +137,8 @@ class RingService : Service() {
 
     override fun onDestroy() {
         instance = null
+        // No ring is heard once the service is gone; the widget should not say otherwise.
+        RingStatusWidget.request(applicationContext)
         idleJobs.values.forEach { it.cancel() }
         watchdogJob?.cancel()
         callAlertJob?.cancel()
@@ -909,6 +912,7 @@ class RingService : Service() {
             },
         )
         updateNotification()
+        RingStatusWidget.request(this)
     }
 
     private fun updateRing(address: String, transform: (RingState) -> RingState) {
@@ -920,6 +924,7 @@ class RingService : Service() {
                 .sortedBy { it.address },
         )
         updateNotification()
+        RingStatusWidget.request(this)
     }
 
     private fun startForegroundNotification() {

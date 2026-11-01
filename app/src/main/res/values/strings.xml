@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">RingLink</string>
+    <string name="widget_description">Rings and their charging cases: charge, charging, worn</string>
 </resources>
