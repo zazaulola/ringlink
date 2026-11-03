@@ -5,6 +5,7 @@ import io.github.ringlink.backup.AutoBackup
 import io.github.ringlink.backup.BackupJobs
 import io.github.ringlink.ble.SyncWorker
 import io.github.ringlink.data.Settings
+import io.github.ringlink.data.WearRules
 import io.github.ringlink.weather.WeatherReceiver
 import io.github.ringlink.weather.WeatherStore
 
@@ -16,6 +17,12 @@ class RingLinkApp : Application() {
         BackupJobs.onAppStart(this)
         // The setting can come back with a restored backup; the receiver follows it.
         WeatherReceiver.sync(this)
-        WeatherStore.enabled = Settings(this).weatherEnabled
+        val settings = Settings(this)
+        WeatherStore.enabled = settings.weatherEnabled
+        // History is judged by one set of rules, so a change to them reaches all of it.
+        if (settings.wearRulesVersion != WearRules.VERSION) {
+            settings.invalidateStepQuarters()
+            settings.wearRulesVersion = WearRules.VERSION
+        }
     }
 }

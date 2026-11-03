@@ -58,6 +58,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent { MaterialTheme { RingLinkApp() } }
     }
+
+    /** Someone has just looked: what they see should be current. */
+    override fun onResume() {
+        super.onResume()
+        RingService.refresh(this, "app opened")
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

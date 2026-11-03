@@ -84,4 +84,55 @@ class WearTest {
         assertEquals(WearEvidence.OFF, ev(-6.0, ambient = Ambient(outdoorC = -4.0)))
         assertEquals(WearEvidence.WORN, ev(8.0, ambient = Ambient(outdoorC = -4.0)))
     }
+
+    /** Out of the case and still at room temperature: on its way onto a finger. */
+    @Test fun `a ring just off its charger counts as worn before it has warmed`() {
+        assertEquals(WearEvidence.LEFT_CHARGER, ev2(26.1, leftCharger = true))
+        assertEquals(WearEvidence.UNSURE, ev2(26.1, leftCharger = false))
+        assertEquals(WearEvidence.WORN, ev2(32.2, leftCharger = true))
+        assertEquals(WearEvidence.OFF, WearRules.evidence(true, 26.1, 0, Ambient(), leftCharger = true))
+    }
+
+    /** Left on the table instead, it does not stay "worn" for long. */
+    @Test fun `off the charger and never warmed lapses sooner than a worn ring`() {
+        val t = WearTracker()
+        assertTrue(t.update(0, WearEvidence.LEFT_CHARGER))
+        assertTrue(t.update(7 * 60_000L, WearEvidence.UNSURE))
+        assertFalse(t.update(9 * 60_000L, WearEvidence.UNSURE))
+    }
+
+    /** A finger warming it takes over, with the full hold from then on. */
+    @Test fun `off the charger then warmed holds like any worn ring`() {
+        val t = WearTracker()
+        t.update(0, WearEvidence.LEFT_CHARGER)
+        t.update(60_000, WearEvidence.WORN)
+        assertTrue(t.update(14 * 60_000L, WearEvidence.UNSURE))
+    }
+
+    private fun ev2(skin: Double, leftCharger: Boolean) = WearRules.evidence(false, skin, 0, Ambient(), leftCharger)
+
+    @Test fun `a charger exit needs the ring heard on the charger moments before`() {
+        val min = 60_000L
+        assertTrue(WearRules.leftCharger(wasDocked = true, wasAt = 0, docked = false, now = 4 * min))
+        assertFalse("hours of silence: it left at some unknown time", WearRules.leftCharger(true, 0, false, 69 * 60 * min))
+        assertFalse(WearRules.leftCharger(false, 0, false, min))
+        assertFalse(WearRules.leftCharger(true, 0, true, min))
+    }
+
+    /** A battery that rose a percent on a table is no charger; only the ring's own word is. */
+    @Test fun `docked is what the ring states`() {
+        assertTrue(WearRules.docked(state = 4, caseBattery = null))
+        assertTrue(WearRules.docked(state = 1, caseBattery = 30))
+        assertFalse(WearRules.docked(state = 2, caseBattery = null))
+    }
+
+    @Test fun `a ring just off its charger joins the worn one but cannot take the buzz from a cool one`() {
+        val fresh = setOf("A")
+        val off = setOf("B")
+        assertEquals(listOf("A", "B"), WearRules.buzzTargets(listOf("A", "B"), { it in fresh }, { it in off }))
+        // A is on a cool, still finger: no fresh evidence. B must not take the buzz from it.
+        assertEquals(listOf("A", "B"), WearRules.buzzTargets(listOf("A", "B"), { false }, { it in off }))
+        // Evidence for A, nothing for the ring on the table.
+        assertEquals(listOf("A"), WearRules.buzzTargets(listOf("A", "C"), { it in fresh }, { it in off }))
+    }
 }

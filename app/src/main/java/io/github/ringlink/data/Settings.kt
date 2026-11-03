@@ -135,6 +135,11 @@ class Settings(context: Context) {
         if (pendingRederive(ringId)?.let { it >= upTo } == true) prefs.edit { remove(KEY_REDERIVE + ringId) }
     }
 
+    /** The WearRules.VERSION that stored step quarters have been asked to be judged by. */
+    var wearRulesVersion: Int
+        get() = prefs.getInt(KEY_WEAR_RULES, 0)
+        set(v) = prefs.edit { putInt(KEY_WEAR_RULES, v) }
+
     /** Take the outdoor temperature from a weather app's broadcast; RingLink itself stays offline. */
     var weatherEnabled: Boolean
         get() = prefs.getBoolean(KEY_WEATHER, false)
@@ -198,6 +203,7 @@ class Settings(context: Context) {
         const val KEY_STEP_QUARTERS_BUILT = "step_quarters_built_generation"
         const val KEY_FULL_DAY_HOURS = "full_day_hours"
         const val KEY_REDERIVE = "rederive_from_"
+        const val KEY_WEAR_RULES = "wear_rules_version"
         const val KEY_WEATHER = "weather_enabled"
         const val KEY_WEATHER_LOCATION = "weather_location"
         const val KEY_WEATHER_AT = "weather_received_at"

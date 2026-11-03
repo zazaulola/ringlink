@@ -151,6 +151,8 @@ class StepStore(private val dao: RingDao, private val settings: Settings) {
         var p = 0
         var d = 0
         var room: DockedReading? = null
+        var wasDocked = false
+        var wasAt = Long.MIN_VALUE
         return readings.map { r ->
             val t = r.recordedAt
             while (p < pulse.size && pulse[p].first < t - PULSE_NEAR_MS) p++
@@ -175,8 +177,11 @@ class StepStore(private val dao: RingDao, private val settings: Settings) {
                         roomC = room?.takeIf { t - it.recordedAt < ROOM_FRESH_MS }?.skinTempA,
                         outdoorC = weather[Math.floorDiv(t, HOUR_MS) * HOUR_MS],
                     ),
+                    leftCharger = WearRules.leftCharger(wasDocked, wasAt, WearRules.docked(r.state, r.caseBattery), t),
                 )
             }
+            wasDocked = WearRules.docked(r.state, r.caseBattery)
+            wasAt = t
             StepSample(t, r.steps, worn = tracker.update(t, evidence))
         }
     }

@@ -99,6 +99,8 @@ data class StepReading(
     val steps: Int,
     val onCharger: Boolean,
     val skinTempA: Double,
+    val state: Int,
+    val caseBattery: Int?,
 )
 
 /** The temperature outdoors in one hour, as a weather app last reported it. */

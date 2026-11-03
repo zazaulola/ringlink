@@ -1,11 +1,16 @@
 package io.github.ringlink.ble
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -13,6 +18,7 @@ import io.github.ringlink.L
 import io.github.ringlink.data.Ring
 import io.github.ringlink.data.RingDatabase
 import io.github.ringlink.data.StepStore
+import io.github.ringlink.data.WearRules
 import io.github.ringlink.weather.WeatherStore
 import io.github.ringlink.widget.RingStatusWidget
 import io.github.ringlink.data.RingRepository
@@ -79,6 +85,29 @@ class RingService : Service() {
     /** The ring a sync session is running on, if any. */
     @Volatile private var sessionRing: String? = null
     private val lastRssiAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val lastStateRequestAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val noticeKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var settleJob: Job? = null
+
+    /** What the phone itself notices that makes a fresh look at the rings worthwhile. */
+    private val phoneEvents = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                    refreshStatus("screen")
+                    RingStatusWidget.request(context)
+                }
+                BluetoothAdapter.ACTION_STATE_CHANGED ->
+                    when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+                        BluetoothAdapter.STATE_TURNING_OFF -> dropAllLinks()
+                        BluetoothAdapter.STATE_ON -> {
+                            L.i("Bluetooth is back on")
+                            scope.launch { connectAll() }
+                        }
+                    }
+            }
+        }
+    }
     private val stepStore by lazy { StepStore(RingDatabase.get(this).dao(), settings) }
     private var callMonitor: CallMonitor? = null
     private var callAlertJob: Job? = null
@@ -102,6 +131,16 @@ class RingService : Service() {
         }
         startForegroundNotification()
         publishRings()
+        val phoneFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(phoneEvents, phoneFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(phoneEvents, phoneFilter)
+        }
         scope.launch { restoreCaseHistory() }
         WeatherStore.enabled = settings.weatherEnabled
         scope.launch { runCatching { WeatherStore(RingDatabase.get(this@RingService).dao()).warm() } }
@@ -129,6 +168,10 @@ class RingService : Service() {
                 scope.launch { measureNow(mode) }
             }
             ACTION_FIND -> scope.launch { findRing() }
+            ACTION_REFRESH -> scope.launch {
+                connectAll()
+                refreshStatus("started to refresh")
+            }
             else -> scope.launch { connectAll() }
         }
         startWatchdog()
@@ -136,6 +179,7 @@ class RingService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(phoneEvents) }
         instance = null
         // No ring is heard once the service is gone; the widget should not say otherwise.
         RingStatusWidget.request(applicationContext)
@@ -161,6 +205,20 @@ class RingService : Service() {
             }
         }
 
+    /**
+     * Bluetooth going off takes every link and pending background connect with it, without
+     * necessarily saying so. Closed here, so that turning it back on starts them afresh; a client
+     * still believing in its background connect would wait for it forever.
+     */
+    private fun dropAllLinks() {
+        L.i("Bluetooth is going off")
+        clients.forEach { (address, client) ->
+            client.disconnect()
+            idleJobs.remove(address)?.cancel()
+            updateRing(address) { it.copy(connected = false) }
+        }
+    }
+
     private suspend fun connectAll() {
         settings.rings.forEach { ring -> ensureConnected(ring.address) }
     }
@@ -170,19 +228,22 @@ class RingService : Service() {
         if (client.isConnected) return true
 
         val lock = connectLocks.getOrPut(address) { Mutex() }
+        // Those who waited on the lock find the link up too, but only the one who made it syncs.
+        var madeIt = false
         val ok = lock.withLock {
             if (client.isConnected) return@withLock true
             L.i("connecting to $address")
             val connected = client.connect(address)
             L.i("connect $address -> $connected")
             updateRing(address) { it.copy(connected = connected) }
+            madeIt = connected
             // Identity, the idle loop and waking the ring's telemetry happen in onRingReady, which
             // runs for every connection — including background connects nobody is awaiting.
             connected
         }
 
         // Outside the lock: syncAll() calls ensureConnected() again and a Mutex is not reentrant.
-        if (ok && shouldAutoSync()) scope.launch { syncAll(force = false) }
+        if (madeIt && shouldAutoSync()) scope.launch { syncAll(force = false) }
         return ok
     }
 
@@ -257,6 +318,15 @@ class RingService : Service() {
             }
         }
         val name = settings.rings.firstOrNull { it.address == address }?.shortName ?: address
+        // A notice is about a moment. Once that has passed — the ring taken off the charger, the
+        // case plugged in — it would only go on saying something no longer true.
+        val caseFine = casePercent != null &&
+            (d.caseCharging || casePercent > ChargerWatch.DEFAULT_CASE_LOW_PERCENT)
+        val noticeKey = "$charging|$caseFine"
+        if (noticeKeys.put(address, noticeKey) != noticeKey) {
+            if (!charging) cancelRingNotice(KIND_CHARGED, address)
+            if (caseFine) cancelRingNotice(KIND_CASE_LOW, address)
+        }
         val events = chargerWatch.update(
             ChargerWatch.Reading(
                 ringId = address,
@@ -319,8 +389,15 @@ class RingService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setAutoCancel(true)
             .build()
-        val id = BATTERY_NOTIFICATION_ID + kind * 1000 + Math.floorMod(address.hashCode(), 1000)
-        runCatching { nm.notify(id, notification) }
+        runCatching { nm.notify(noticeId(kind, address), notification) }
+    }
+
+    private fun noticeId(kind: Int, address: String) =
+        BATTERY_NOTIFICATION_ID + kind * 1000 + Math.floorMod(address.hashCode(), 1000)
+
+    private fun cancelRingNotice(kind: Int, address: String) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        runCatching { nm.cancel(noticeId(kind, address)) }
     }
 
     /**
@@ -334,15 +411,15 @@ class RingService : Service() {
         val rssi = rssiFor(address)
         // A reading already taken off the link is stored even if the loop that took it is being
         // cancelled — by a sync starting, say — or it would simply be lost.
-        withContext(NonCancellable) { repo.recordDescriptor(address, d, rssi) }
+        val chargerChanged = withContext(NonCancellable) { repo.recordDescriptor(address, d, rssi) }
         lastDescriptorAt[address] = System.currentTimeMillis()
         val charging = repo.isCharging(address)
+        if (chargerChanged) onChargerChanged(address, charging)
         updateRing(address) {
             it.copy(
                 battery = d.batteryPercent,
                 onCharger = charging,
                 worn = repo.isWorn(address),
-                wornNow = repo.isWornNow(address),
                 skinTemp = d.skinTempA,
                 caseBattery = d.caseBatteryPercent,
                 caseCharging = d.caseCharging,
@@ -350,6 +427,59 @@ class RingService : Service() {
         }
         checkBattery(address, d.batteryPercent, charging)
         watchCharger(address, d, charging)
+    }
+
+    /**
+     * Ask every ring for its state now, instead of waiting for it to report.
+     *
+     * A ring on a finger reports only twice in two and a half minutes, so what the phone shows can
+     * be well behind what has happened. This is what the moments that matter call: the screen
+     * coming on, the app opening, the widget's refresh, a ring going on or off its charger.
+     */
+    fun refreshStatus(reason: String) {
+        L.d("status refresh: $reason")
+        settings.rings.forEach { ring -> scope.launch { requestState(ring.address) } }
+    }
+
+    private suspend fun requestState(address: String) {
+        // Either of these already has the link, and brings descriptors of its own.
+        if (measuring.isLocked || syncing.isLocked || sessionRing == address) return
+        val now = System.currentTimeMillis()
+        val last = lastStateRequestAt[address]
+        if (last != null && now - last < STATE_REQUEST_GAP_MS) return
+        lastStateRequestAt[address] = now
+        val client = clientFor(address)
+        if (!client.isConnected) {
+            if (!client.backgroundConnectArmed) ensureConnected(address)
+            return
+        }
+        val seenBefore = lastDescriptorAt[address]
+        // Refused means the link is busy, or still being set up — which wakes the ring itself.
+        if (!client.writeOnce(Opcodes.FETCH)) return
+        // Answered as a descriptor, which the idle loop handles like any other: within a second on
+        // both generations. A link that has not been authenticated yet needs a session first.
+        delay(STATE_REPLY_WAIT_MS)
+        if (lastDescriptorAt[address] == seenBefore) {
+            L.d("no state from $address on request; opening a session")
+            wakeTelemetry(address)
+        }
+    }
+
+    /**
+     * A ring went on or off its charger: the one moment rings are known to be changing hands.
+     *
+     * The other ring is usually moving the opposite way, so all of them are asked now, and again
+     * over the next minutes while the finger warms the one just put on.
+     */
+    private fun onChargerChanged(address: String, charging: Boolean) {
+        L.i("$address ${if (charging) "went on" else "came off"} its charger")
+        settleJob?.cancel()
+        settleJob = scope.launch {
+            for (wait in SETTLE_REQUESTS_MS) {
+                delay(wait)
+                refreshStatus("charger change")
+            }
+        }
     }
 
     /**
@@ -436,6 +566,11 @@ class RingService : Service() {
         // a wake only once it can run: stamped before, a wake skipped for a sync whose session then
         // failed left the ring silent for the whole stale period.
         if (!syncing.tryLock()) return
+        if (measuring.isLocked) {
+            // Started between the check above and the lock; it owns the link now.
+            syncing.unlock()
+            return
+        }
         lastWakeAt[address] = now
         var flowing = false
         try {
@@ -462,10 +597,13 @@ class RingService : Service() {
             }
             L.w("telemetry: $address sent no state after 07 or d0")
         } finally {
+            // Restarted before the lock goes, so a sync queued on it finds the loop to stop; and not
+            // at all under a measurement, which would lose its frames to it.
+            if (!measuring.isLocked) startIdleLoop(address)
             syncing.unlock()
-            startIdleLoop(address)
             val nowMs = System.currentTimeMillis()
             if (!flowing &&
+                !measuring.isLocked &&
                 !settings.isQuietHour(Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) &&
                 nowMs - lastFallbackSyncAt > FALLBACK_SYNC_MIN_GAP_MS
             ) {
@@ -590,8 +728,7 @@ class RingService : Service() {
         val notCharging = connected.filterNot { state.value.ringOrNull(it.address)?.onCharger == true }
         // By what the rings say now, not the held state: a ring just taken off keeps that for a
         // while, and would take the buzz from the one on the finger.
-        val worn = notCharging.filter { state.value.ringOrNull(it.address)?.wornNow == true }
-            .ifEmpty { notCharging }
+        val worn = WearRules.buzzTargets(notCharging, { repo.isWornNow(it.address) }, { repo.isJustOffCharger(it.address) })
         val targets = worn.ifEmpty { connected }
 
         if (System.currentTimeMillis() - requestedAt > STALE_BUZZ_MS) {
@@ -647,6 +784,12 @@ class RingService : Service() {
     suspend fun syncAll(force: Boolean) {
         if (!force && !shouldAutoSync()) return
         syncing.withLock {
+            // Queued behind another sync: that one may have just done what this was for.
+            if (!force && !shouldAutoSync()) return@withLock
+            if (measuring.isLocked) {
+                L.d("sync skipped: a measurement has the link")
+                return@withLock
+            }
             state.value = state.value.copy(syncing = true, status = "Syncing…")
             var total = 0
             try {
@@ -780,6 +923,15 @@ class RingService : Service() {
             return
         }
         try {
+            // A wake or sync has the link; two conversations on one channel would ruin both.
+            if (syncing.isLocked) {
+                state.value = state.value.copy(status = "Waiting for the ring…")
+                val free = withTimeoutOrNull(MEASURE_WAIT_MS) { syncing.withLock { true } }
+                if (free != true) {
+                    state.value = state.value.copy(status = "The ring is syncing — try again shortly")
+                    return
+                }
+            }
             val client = clientFor(ring.address)
             idleJobs.remove(ring.address)?.cancelAndJoin()
             state.value = state.value.copy(
@@ -1002,8 +1154,6 @@ class RingService : Service() {
         val onCharger: Boolean = false,
         /** Judged from temperature, steps and the surroundings, not stated by the ring — see WearRules. */
         val worn: Boolean = false,
-        /** Fresh evidence of a finger, minutes old at most — what buzzing goes by. */
-        val wornNow: Boolean = false,
         val skinTemp: Double? = null,
         val info: DeviceInfo? = null,
         val caseBattery: Int? = null,
@@ -1041,6 +1191,7 @@ class RingService : Service() {
 
     companion object {
         const val ACTION_SYNC = "io.github.ringlink.SYNC"
+        const val ACTION_REFRESH = "io.github.ringlink.REFRESH"
         const val ACTION_BUZZ = "io.github.ringlink.BUZZ"
         const val ACTION_STOP = "io.github.ringlink.STOP"
         const val ACTION_REEXPORT = "io.github.ringlink.REEXPORT"
@@ -1069,7 +1220,12 @@ class RingService : Service() {
          * Connected but silent for this long means the ring has stopped reporting. Descriptors
          * normally come every 30-60 s, so this is several missed ones, not one late one.
          */
-        private const val TELEMETRY_STALE_MS = 10 * 60_000L
+        private const val TELEMETRY_STALE_MS = 3 * 60_000L
+        private const val STATE_REQUEST_GAP_MS = 10_000L
+        private const val MEASURE_WAIT_MS = 25_000L
+        private const val STATE_REPLY_WAIT_MS = 3_000L
+        /** Gaps between requests after a ring changes hands: at once, then as a finger warms it. */
+        private val SETTLE_REQUESTS_MS = longArrayOf(0, 15_000, 30_000, 45_000, 90_000)
         private const val RSSI_EVERY_MS = 20_000L
         private const val REDERIVE_MARGIN_MS = 45 * 60_000L
 
@@ -1095,7 +1251,25 @@ class RingService : Service() {
         val state = MutableStateFlow(State())
         val observable: StateFlow<State> get() = state
 
+        /** Get fresh state from the rings, starting the service if it is not there to do it. */
+        fun refresh(context: Context, reason: String) {
+            val running = instance
+            when {
+                running != null -> running.refreshStatus(reason)
+                Settings(context).rings.isNotEmpty() ->
+                    runCatching { start(context, ACTION_REFRESH) }.onFailure { L.w("could not start to refresh: $it") }
+            }
+        }
+
         fun start(context: Context, action: String? = null) {
+            // Without it the service cannot go foreground as a connected device and takes the
+            // whole app down with it — before the app could ask for the permission.
+            if (Build.VERSION.SDK_INT >= 31 &&
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+            ) {
+                L.w("service not started: Bluetooth permission not granted")
+                return
+            }
             val i = Intent(context, RingService::class.java).apply { this.action = action }
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }

@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Typeface
 import android.os.Build
+import android.os.PowerManager
+import android.text.format.DateFormat
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
@@ -31,6 +33,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.Date
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -42,6 +45,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  * covers the times the app is not running.
  */
 class RingStatusWidget : AppWidgetProvider() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_REFRESH) {
+            RingService.refresh(context, "widget")
+            request(context)
+            return
+        }
+        super.onReceive(context, intent)
+    }
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         val pending = goAsync()
@@ -113,18 +125,23 @@ class RingStatusWidget : AppWidgetProvider() {
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(ComponentName(context, RingStatusWidget::class.java))
             if (ids.isEmpty()) return@withLock null
+            // Nobody is looking. The screen coming on asks for a redraw, and for fresh state.
+            if (!force && !context.getSystemService(PowerManager::class.java).isInteractive) return@withLock null
             val now = System.currentTimeMillis()
             val settings = Settings(context)
             val running = RingService.instance != null
             val tiles = tiles(context, settings, running)
             val low = settings.lowBatteryPercent
             val night = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
-            val words = listOf("running=$running", "night=$night") + tiles.map { t ->
+            val asOf = tiles.mapNotNull { it.lastSeenAt }.maxOrNull()
+            val title = context.getString(R.string.app_name) +
+                (asOf?.let { " · " + DateFormat.getTimeFormat(context).format(Date(it)) } ?: "")
+            val words = listOf("running=$running", "night=$night", title) + tiles.map { t ->
                 listOf(t.name, RingTileText.battery(t), RingTileText.status(t, now), RingTileText.case(t, now), RingTileText.tone(t, low, now))
                     .joinToString("|")
             }
             if (force || words != lastDrawn) {
-                manager.updateAppWidget(ids, views(context, tiles, low, now, running))
+                manager.updateAppWidget(ids, views(context, tiles, low, now, running, title))
                 lastDrawn = words
             }
             RingTileText.nextChange(tiles, now)
@@ -156,8 +173,8 @@ class RingStatusWidget : AppWidgetProvider() {
             }
         }
 
-        private fun views(context: Context, tiles: List<RingTile>, low: Int, now: Long, running: Boolean): RemoteViews {
-            val full = fullViews(context, tiles, low, now, running)
+        private fun views(context: Context, tiles: List<RingTile>, low: Int, now: Long, running: Boolean, title: String): RemoteViews {
+            val full = fullViews(context, tiles, low, now, running, title)
             if (Build.VERSION.SDK_INT < 31) return full
             // The launcher picks the larger layout that fits the widget's size.
             val rows = tiles.size.coerceAtLeast(1)
@@ -169,9 +186,10 @@ class RingStatusWidget : AppWidgetProvider() {
             )
         }
 
-        private fun fullViews(context: Context, tiles: List<RingTile>, low: Int, now: Long, running: Boolean): RemoteViews {
+        private fun fullViews(context: Context, tiles: List<RingTile>, low: Int, now: Long, running: Boolean, title: String): RemoteViews {
             val v = RemoteViews(context.packageName, R.layout.widget_ring_status)
-            v.setTextViewText(R.id.widget_title, if (running) context.getString(R.string.app_name) else NOT_RUNNING)
+            v.setTextViewText(R.id.widget_title, if (running) title else NOT_RUNNING)
+            v.setOnClickPendingIntent(R.id.widget_refresh, refresh(context))
             setColor(context, v, R.id.widget_title, if (running) R.color.widget_dim else R.color.widget_low)
             v.setViewVisibility(R.id.widget_empty, if (tiles.isEmpty()) View.VISIBLE else View.GONE)
             v.setTextViewText(R.id.widget_empty, NO_RING)
@@ -231,6 +249,12 @@ class RingStatusWidget : AppWidgetProvider() {
             BatteryTone.UNKNOWN -> R.color.widget_dim
         }
 
+        private fun refresh(context: Context): PendingIntent = PendingIntent.getBroadcast(
+            context, 0,
+            Intent(context, RingStatusWidget::class.java).setAction(ACTION_REFRESH),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
         private fun openApp(context: Context): PendingIntent = PendingIntent.getActivity(
             context, 0,
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -250,6 +274,7 @@ class RingStatusWidget : AppWidgetProvider() {
             }
         }
 
+        private const val ACTION_REFRESH = "io.github.ringlink.widget.REFRESH"
         private const val NOT_RUNNING = "RingLink is not running — tap to open it"
         private const val NO_RING = "No ring added yet — open RingLink to add one."
         private const val SPAN_LOW = 0xFFE53935.toInt()

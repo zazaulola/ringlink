@@ -31,6 +31,7 @@ object SettingsSnapshot {
             Settings.KEY_STEP_QUARTERS_GEN,
             Settings.KEY_STEP_QUARTERS_BUILT,
             Settings.KEY_REDERIVE + "*",
+            Settings.KEY_WEAR_RULES,
             // What the last weather report said belongs to this phone's weather app.
             Settings.KEY_WEATHER_LOCATION,
             Settings.KEY_WEATHER_AT,

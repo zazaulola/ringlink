@@ -45,6 +45,12 @@ class RingRepository(private val dao: RingDao) {
 
     private data class Docked(val since: Long, val lastAt: Long, val tempC: Double)
 
+    /** Each ring's last reading: when, and whether it was on its charger then. */
+    private val lastReading = HashMap<String, Pair<Long, Boolean>>()
+
+    /** When each ring last came off its charger — see [isJustOffCharger]. */
+    private val leftChargerAt = HashMap<String, Long>()
+
     fun isWorn(ringId: String): Boolean = synchronized(wear) { wear[ringId]?.isWorn ?: false }
 
     /**
@@ -58,16 +64,28 @@ class RingRepository(private val dao: RingDao) {
     fun isWornNow(ringId: String, now: Long = System.currentTimeMillis()): Boolean =
         synchronized(wear) { freshWornAt[ringId]?.let { now - it <= FRESH_MS } ?: false }
 
+    /** Came off its charger minutes ago: likely going on a finger, though not proof of one. */
+    fun isJustOffCharger(ringId: String, now: Long = System.currentTimeMillis()): Boolean =
+        synchronized(wear) { leftChargerAt[ringId]?.let { now - it <= WearRules.LEFT_CHARGER_HOLD_MS } ?: false }
+
     /**
      * Store a descriptor, with the link's signal strength when it was read.
      *
      * Charging and wear are both decided here, where descriptors from the idle loop and from a
      * sync meet, so the stored history and the screen cannot disagree.
+     *
+     * Returns whether the ring went on or off its charger with this reading. The reading before is
+     * looked up when this run has none, so a restart does not lose a swap made across it.
      */
-    suspend fun recordDescriptor(ringId: String, descriptor: Descriptor, rssi: Int?) {
+    suspend fun recordDescriptor(ringId: String, descriptor: Descriptor, rssi: Int?): Boolean {
         val now = System.currentTimeMillis()
+        val before = synchronized(wear) { lastReading[ringId] }
+            ?: dao.latestDeviceStateNow(ringId)?.let { it.recordedAt to WearRules.docked(it.state, it.caseBattery) }
         val charging = charge.update(ringId, descriptor)
+        val dockedNow = WearRules.docked(descriptor.state, descriptor.caseBatteryPercent)
+        val leftCharger = before != null && WearRules.leftCharger(before.second, before.first, dockedNow, now)
         synchronized(wear) {
+            lastReading[ringId] = now to dockedNow
             if (charging) {
                 val prev = docked[ringId]
                 val since = if (prev != null && now - prev.lastAt <= DOCK_GAP_MS) prev.since else now
@@ -81,7 +99,7 @@ class RingRepository(private val dao: RingDao) {
                 .filter { now - it.since >= DOCK_SETTLE_MS && now - it.lastAt < ROOM_FRESH_MS }
                 .maxByOrNull { it.lastAt }?.tempC
             val ambient = Ambient(roomC = room, outdoorC = WeatherStore.cachedAt(now))
-            val evidence = WearRules.evidence(charging, descriptor.skinTempA, descriptor.steps, ambient)
+            val evidence = WearRules.evidence(charging, descriptor.skinTempA, descriptor.steps, ambient, leftCharger)
             wear.getOrPut(ringId) { WearTracker() }.update(now, evidence)
 
             val quarter = StepQuarters.floor(now)
@@ -90,7 +108,11 @@ class RingRepository(private val dao: RingDao) {
             val stepping = descriptor.steps > 0 && (before == null || before.first != quarter || descriptor.steps > before.second)
             val byTemperature = WearRules.evidence(charging, descriptor.skinTempA, 0, ambient) == WearEvidence.WORN
             if (!charging && (stepping || byTemperature)) freshWornAt[ringId] = now
-            if (charging) freshWornAt.remove(ringId)
+            if (dockedNow) {
+                freshWornAt.remove(ringId)
+                leftChargerAt.remove(ringId)
+            }
+            if (leftCharger) leftChargerAt[ringId] = now
         }
         dao.insertDeviceState(
             DeviceStateEntity(
@@ -108,6 +130,7 @@ class RingRepository(private val dao: RingDao) {
                 rssi = rssi,
             ),
         )
+        return before != null && before.second != dockedNow
     }
 
     /** A sink bound to one ring, so a sync can only write rows attributed to the ring it drained. */
@@ -149,7 +172,9 @@ class RingRepository(private val dao: RingDao) {
             )
         }
 
-        override suspend fun onDescriptor(descriptor: Descriptor) = recordDescriptor(ringId, descriptor, rssi = null)
+        override suspend fun onDescriptor(descriptor: Descriptor) {
+            recordDescriptor(ringId, descriptor, rssi = null)
+        }
     }
 
     fun epochCount(): Flow<Int> = dao.epochCount()

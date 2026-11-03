@@ -1,7 +1,7 @@
 package io.github.ringlink.data
 
 /** What one reading says about whether its ring is on a finger. */
-enum class WearEvidence { WORN, OFF, UNSURE }
+enum class WearEvidence { WORN, OFF, UNSURE, LEFT_CHARGER }
 
 /** Temperatures around the ring, when known: the room's, from a docked ring, and outdoors. */
 data class Ambient(val roomC: Double? = null, val outdoorC: Double? = null)
@@ -35,6 +35,46 @@ object WearRules {
     /** How long a worn ring stays worn on readings that cannot tell. */
     const val HOLD_MS = 15 * 60_000L
 
+    /**
+     * How long a ring just out of its charger counts as worn before its finger has warmed it.
+     *
+     * Taken off the charger, a ring is being put on: of 9 times one stayed off for two minutes, 8
+     * reached 30 °C, and no pulse-bearing history contradicted it. But warming takes a median of
+     * 109 s and up to 7 minutes, all of which read as "off finger" on temperature alone.
+     */
+    const val LEFT_CHARGER_HOLD_MS = 8 * 60_000L
+
+    /** Longer than this since it was last heard on the charger, and "just off it" is a guess. */
+    const val LEFT_CHARGER_MAX_GAP_MS = 10 * 60_000L
+
+    /** Bumped when the rules change, so stored history is judged again by the same ones. */
+    const val VERSION = 1
+
+    /**
+     * Whether a ring is on its charger by what it says itself. A battery that rose also counts as
+     * charging, but not here: a ring on a table can gain a percent, and that is no charger.
+     */
+    fun docked(state: Int, caseBattery: Int?): Boolean = state == STATE_CHARGING || caseBattery != null
+
+    /** The ring was heard on its charger moments ago and is now off it. */
+    fun leftCharger(wasDocked: Boolean, wasAt: Long, docked: Boolean, now: Long): Boolean =
+        wasDocked && !docked && now - wasAt <= LEFT_CHARGER_MAX_GAP_MS
+
+    /**
+     * Which rings to buzz, of those not charging.
+     *
+     * The ones with fresh evidence of a finger. A ring just out of its case joins them, since it
+     * may be the one going on while the other cools on the table; but on its own it takes nothing
+     * from the rest, because a ring on a cool, still finger gives no fresh evidence at all.
+     */
+    fun <T> buzzTargets(notCharging: List<T>, fresh: (T) -> Boolean, justOffCharger: (T) -> Boolean): List<T> {
+        val withEvidence = notCharging.filter(fresh)
+        if (withEvidence.isEmpty()) return notCharging
+        return notCharging.filter { fresh(it) || justOffCharger(it) }
+    }
+
+    private const val STATE_CHARGING = 0x04
+
     /** However hot the air, a finger at this temperature is a finger: the warm threshold stops here. */
     const val WARM_CAP_C = 34.0
 
@@ -54,11 +94,18 @@ object WearRules {
 
     fun coldThreshold(a: Ambient): Double = a.roomC?.let { minOf(COLD_C, it - BELOW_ROOM_C) } ?: COLD_C
 
-    fun evidence(onCharger: Boolean, skinC: Double, steps: Int, ambient: Ambient = Ambient()): WearEvidence = when {
+    fun evidence(
+        onCharger: Boolean,
+        skinC: Double,
+        steps: Int,
+        ambient: Ambient = Ambient(),
+        leftCharger: Boolean = false,
+    ): WearEvidence = when {
         onCharger -> WearEvidence.OFF
         steps > 0 -> WearEvidence.WORN
         skinC >= warmThreshold(ambient) -> WearEvidence.WORN
         skinC < coldThreshold(ambient) -> if (leftOutside(skinC, ambient)) WearEvidence.OFF else WearEvidence.WORN
+        leftCharger -> WearEvidence.LEFT_CHARGER
         else -> WearEvidence.UNSURE
     }
 
@@ -74,9 +121,12 @@ object WearRules {
 }
 
 /** One ring's wear state over time: evidence decides, and an unsure reading keeps a recent "worn". */
-class WearTracker(private val holdMs: Long = WearRules.HOLD_MS) {
+class WearTracker(
+    private val holdMs: Long = WearRules.HOLD_MS,
+    private val leftChargerHoldMs: Long = WearRules.LEFT_CHARGER_HOLD_MS,
+) {
     private var worn = false
-    private var lastWornAt = Long.MIN_VALUE
+    private var wornUntil = Long.MIN_VALUE
 
     val isWorn: Boolean get() = worn
 
@@ -84,10 +134,14 @@ class WearTracker(private val holdMs: Long = WearRules.HOLD_MS) {
         when (evidence) {
             WearEvidence.WORN -> {
                 worn = true
-                lastWornAt = atMillis
+                wornUntil = atMillis + holdMs
+            }
+            WearEvidence.LEFT_CHARGER -> {
+                worn = true
+                wornUntil = maxOf(wornUntil, atMillis + leftChargerHoldMs)
             }
             WearEvidence.OFF -> worn = false
-            WearEvidence.UNSURE -> if (worn && atMillis - lastWornAt > holdMs) worn = false
+            WearEvidence.UNSURE -> if (worn && atMillis > wornUntil) worn = false
         }
         return worn
     }

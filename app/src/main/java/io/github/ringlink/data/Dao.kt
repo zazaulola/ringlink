@@ -224,7 +224,7 @@ interface RingDao {
     // --- step quarters ---------------------------------------------------------------------------
 
     @Query(
-        "SELECT recordedAt, steps, onCharger, skinTempA FROM device_state " +
+        "SELECT recordedAt, steps, onCharger, skinTempA, state, caseBattery FROM device_state " +
             "WHERE ringId = :ringId AND recordedAt >= :from AND recordedAt < :to ORDER BY recordedAt",
     )
     suspend fun stepReadings(ringId: String, from: Long, to: Long): List<StepReading>

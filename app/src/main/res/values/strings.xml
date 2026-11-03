@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">RingLink</string>
     <string name="widget_description">Rings and their charging cases: charge, charging, worn</string>
+    <string name="widget_refresh">Ask the rings for their state now</string>
 </resources>
